@@ -1,8 +1,8 @@
 {
   "name": "codemoss",
-  "displayName": "CodeMoss AI Assistant",
+  "displayName": "CodeMoss（Claude Code GUI）",
   "description": "AI-powered coding assistant for VSCode with Claude and Codex support",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "publisher": "codemoss",
   "license": "MIT",
   "repository": {

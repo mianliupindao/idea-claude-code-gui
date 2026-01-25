@@ -7,7 +7,6 @@
     "dev": "vite",
     "prebuild": "node scripts/extract-version.mjs",
     "build": "tsc && vite build",
-    "postbuild": "node scripts/copy-dist.mjs",
     "preview": "vite preview"
   },
   "devDependencies": {

@@ -1,4 +1,0 @@
-<idea-plugin>
-    <!-- This file is loaded only when com.intellij.java plugin is available -->
-    <!-- Java-specific extensions can be added here if needed in the future -->
-</idea-plugin>

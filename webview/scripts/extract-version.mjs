@@ -10,31 +10,19 @@ const __dirname = path.dirname(__filename);
 
 // 获取项目根目录 (webview 的父目录)
 const projectRoot = path.resolve(__dirname, '../..');
-const buildGradlePath = path.join(projectRoot, 'build.gradle');
+const packageJsonPath = path.join(projectRoot, 'package.json');
 
-// 读取 build.gradle 文件
-const buildGradleContent = fs.readFileSync(buildGradlePath, 'utf8');
+// 读取 package.json 文件
+const packageJsonContent = fs.readFileSync(packageJsonPath, 'utf8');
+const packageJson = JSON.parse(packageJsonContent);
 
 // 提取版本号
-// 查找类似 version = '0.1.0-beta3' 这样的行
-let versionMatch = buildGradleContent.match(/^version\s*=\s*'(.+)'$/m);
-if (!versionMatch) {
-  // 如果上面的正则失败，尝试另一种方式
-  const lines = buildGradleContent.split('\n');
-  const versionLine = lines.find(line => line.trim().startsWith('version ='));
-  if (versionLine) {
-    const match = versionLine.match(/version\s*=\s*'(.+)'/);
-    if (match) {
-      versionMatch = match;
-    }
-  }
-}
-if (!versionMatch) {
-  console.error('Error: Could not find version in build.gradle');
+const version = packageJson.version;
+if (!version) {
+  console.error('Error: Could not find version in package.json');
   process.exit(1);
 }
 
-const version = versionMatch[1];
 console.log(`Found version: ${version}`);
 
 // 创建版本文件供 webview 使用
