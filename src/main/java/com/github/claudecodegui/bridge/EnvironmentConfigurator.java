@@ -2,6 +2,7 @@ package com.github.claudecodegui.bridge;
 
 import com.intellij.openapi.diagnostic.Logger;
 import com.github.claudecodegui.util.PlatformUtils;
+import com.github.claudecodegui.util.ShellExecutor;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -27,8 +28,11 @@ public class EnvironmentConfigurator {
 
     private static final Logger LOG = Logger.getInstance(EnvironmentConfigurator.class);
     private static final String CLAUDE_PERMISSION_ENV = "CLAUDE_PERMISSION_DIR";
+    private static final String CLAUDE_SESSION_ID_ENV = "CLAUDE_SESSION_ID";
+    private static final String CODEX_HOME_ENV = "CODEX_HOME";
 
     private volatile String cachedPermissionDir = null;
+    private volatile String sessionId = null;
 
     // Cache for Codex env_key values from config.toml
     private volatile Map<String, String> cachedCodexEnvVars = null;
@@ -117,6 +121,16 @@ public class EnvironmentConfigurator {
             }
         }
 
+        // 5. 确保 CODEX_HOME 稳定且非空（Codex 用它定位 config/sessions/skills）
+        // macOS GUI 启动场景下环境变量可能缺失，依赖隐式默认值会导致功能探测不稳定（例如 skills tool 时有时无）
+        String codexHome = env.get(CODEX_HOME_ENV);
+        if (codexHome == null || codexHome.trim().isEmpty()) {
+            String userHome = System.getProperty("user.home");
+            if (userHome != null && !userHome.isEmpty()) {
+                env.put(CODEX_HOME_ENV, Paths.get(userHome, ".codex").toString());
+            }
+        }
+
         configurePermissionEnv(env);
     }
 
@@ -131,6 +145,25 @@ public class EnvironmentConfigurator {
         if (permissionDir != null) {
             env.putIfAbsent(CLAUDE_PERMISSION_ENV, permissionDir);
         }
+        String sid = getSessionId();
+        if (sid != null) {
+            env.putIfAbsent(CLAUDE_SESSION_ID_ENV, sid);
+        }
+    }
+
+    /**
+     * Get or generate session ID for this instance.
+     * @return Session ID
+     */
+    public String getSessionId() {
+        if (this.sessionId == null) {
+            synchronized (this) {
+                if (this.sessionId == null) {
+                    this.sessionId = java.util.UUID.randomUUID().toString();
+                }
+            }
+        }
+        return this.sessionId;
     }
 
     /**
@@ -338,6 +371,21 @@ public class EnvironmentConfigurator {
     }
 
     /**
+     * Validate environment variable name format.
+     * Valid names start with a letter or underscore, followed by letters, digits, or underscores.
+     * This prevents command injection when the name is used in shell commands.
+     *
+     * @param envName Environment variable name to validate
+     * @return true if valid, false otherwise
+     */
+    private boolean isValidEnvName(String envName) {
+        if (envName == null || envName.isEmpty()) {
+            return false;
+        }
+        return envName.matches("^[a-zA-Z_][a-zA-Z0-9_]*$");
+    }
+
+    /**
      * Get environment variable by executing a login shell (macOS/Linux).
      * This captures environment variables set in .zshrc, .bash_profile, etc.
      *
@@ -345,36 +393,38 @@ public class EnvironmentConfigurator {
      * @return Value or null
      */
     private String getEnvFromShell(String envName) {
-        try {
-            // Use login shell to get full environment
-            String shell = System.getenv("SHELL");
-            if (shell == null || shell.isEmpty()) {
-                shell = "/bin/zsh"; // Default to zsh on macOS
-            }
-
-            List<String> command = new ArrayList<>();
-            command.add(shell);
-            command.add("-l"); // Login shell
-            command.add("-c");
-            command.add("echo \"$" + envName + "\"");
-
-            ProcessBuilder pb = new ProcessBuilder(command);
-            pb.redirectErrorStream(true);
-
-            Process process = pb.start();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                String line = reader.readLine();
-                process.waitFor();
-
-                if (line != null && !line.trim().isEmpty()) {
-                    LOG.debug("[Codex] Env var found via shell: " + envName);
-                    return line.trim();
-                }
-            }
-        } catch (Exception e) {
-            LOG.debug("[Codex] Failed to get env from shell: " + e.getMessage());
+        // Validate env name to prevent command injection
+        if (!isValidEnvName(envName)) {
+            LOG.warn("[Codex] Invalid env var name, skipping: " + envName);
+            return null;
         }
+
+        // Use login + interactive shell to get full environment
+        // fnm and other version managers require interactive shell to load .zshrc
+        String shell = System.getenv("SHELL");
+        if (shell == null || shell.isEmpty()) {
+            shell = "/bin/zsh"; // Default to zsh on macOS
+        }
+
+        List<String> command = new ArrayList<>();
+        command.add(shell);
+        command.add("-l"); // Login shell
+        command.add("-i"); // Interactive shell (needed for fnm, nvm etc.)
+        command.add("-c");
+        command.add("echo \"$" + envName + "\"");
+
+        ShellExecutor.ExecutionResult result = ShellExecutor.executeAndGetLast(
+                command,
+                ShellExecutor.createShellOutputFilter(),
+                "[Codex] getEnvFromShell(" + envName + ")",
+                ShellExecutor.DEFAULT_TIMEOUT_SECONDS
+        );
+
+        if (result.isSuccess() && result.getOutput() != null) {
+            LOG.debug("[Codex] Env var found via shell: " + envName);
+            return result.getOutput();
+        }
+
         return null;
     }
 
@@ -385,6 +435,12 @@ public class EnvironmentConfigurator {
      * @return Value or null
      */
     private String getEnvFromWindowsShell(String envName) {
+        // Validate env name to prevent command injection
+        if (!isValidEnvName(envName)) {
+            LOG.warn("[Codex] Invalid env var name, skipping: " + envName);
+            return null;
+        }
+
         try {
             List<String> command = new ArrayList<>();
             command.add("cmd");

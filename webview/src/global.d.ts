@@ -362,6 +362,16 @@ interface Window {
   onEditorFontConfigReceived?: (json: string) => void;
 
   /**
+   * IDE theme received callback - 接收 IDE 主题配置
+   */
+  onIdeThemeReceived?: (json: string) => void;
+
+  /**
+   * IDE theme changed callback - IDE 主题变化时的回调
+   */
+  onIdeThemeChanged?: (json: string) => void;
+
+  /**
    * Update agents list
    */
   updateAgents?: (json: string) => void;
@@ -423,6 +433,18 @@ interface Window {
   onStreamEnd?: () => void;
 
   /**
+   * Permission denied callback - 权限被拒绝时调用
+   * 用于标记未完成的工具调用为"中断"状态
+   */
+  onPermissionDenied?: () => void;
+
+  /**
+   * 存储被拒绝的工具调用 ID 集合
+   * 用于让工具块知道哪些工具调用被用户拒绝了权限
+   */
+  __deniedToolIds?: Set<string>;
+
+  /**
    * Update streaming enabled configuration - 接收流式传输配置
    */
   updateStreamingEnabled?: (json: string) => void;
@@ -431,6 +453,16 @@ interface Window {
    * Rewind result callback - 回滚操作结果回调
    */
   onRewindResult?: (json: string) => void;
+
+  /**
+   * Undo file result callback - 单文件撤销操作结果回调
+   */
+  onUndoFileResult?: (json: string) => void;
+
+  /**
+   * Undo all files result callback - 批量撤销操作结果回调
+   */
+  onUndoAllFileResult?: (json: string) => void;
 
   // ============================================================================
   // 🔧 依赖管理回调函数

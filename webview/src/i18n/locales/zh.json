@@ -90,9 +90,11 @@
       "description": "配置页面主题、语言和 Node.js 运行环境",
       "theme": {
         "label": "界面主题",
-        "light": "亮色主题",
+        "system": "跟随 IDE",
+        "systemDesc": "自动跟随 IDE 主题",
+        "light": "亮色",
         "lightDesc": "清爽明亮，适合白天使用",
-        "dark": "暗色主题",
+        "dark": "暗色",
         "darkDesc": "护眼舒适，适合夜间使用"
       },
       "language": {
@@ -187,6 +189,11 @@
     "communityDesc": "扫描下方二维码加入官方微信交流群，获取最新资讯和技术支持",
     "communityQrTip": "使用微信扫一扫加入交流群",
     "communityQrAlt": "官方微信交流群二维码",
+    "sponsor": "赞助支持",
+    "sponsorDesc": "如果这个项目对你有帮助，欢迎赞助支持，你的支持是我持续维护的动力！",
+    "alipay": "支付宝",
+    "wechatPay": "微信",
+    "paypal": "PayPal",
     "provider": {
       "currentConfig": "当前ClaudeCode配置",
       "loading": "加载中...",
@@ -408,10 +415,13 @@
     "title": "Claude 有一些问题想问你",
     "progress": "问题 {{current}} / {{total}}",
     "multiSelectHint": "可以选择多个选项",
-    "cancel": "AI自动选择",
+    "cancel": "Auto",
     "back": "上一步",
     "next": "下一步",
-    "submit": "提交"
+    "submit": "提交",
+    "otherOption": "其他",
+    "otherOptionDesc": "输入自定义答案",
+    "customInputPlaceholder": "请输入您的答案..."
   },
   "planApproval": {
     "title": "计划已准备就绪",
@@ -632,12 +642,47 @@
     "editPrefix": "编辑: {{fileName}}",
     "lineRange": "第 {{start}}-{{end}} 行",
     "filePath": "文件路径：",
-    "unknownTool": "未知工具"
+    "unknownTool": "未知工具",
+    "bashGroupBatchRun": "批量运行命令",
+    "bashGroupBatchExecution": "批量执行",
+    "bashGroupCompleted": "完成",
+    "bashGroupAllCompleted": "全部完成",
+    "bashGroupFailed": "失败"
   },
   "todo": {
     "inProgress": "进行中 {{completed}}/{{total}} 个任务",
     "allCompleted": "已完成 {{completed}}/{{total}} 个任务",
     "stopped": "已停止"
+  },
+  "statusPanel": {
+    "todoTab": "计划",
+    "tasksTab": "任务",
+    "subagentTab": "子代理",
+    "filesTab": "文件改动",
+    "editsTab": "编辑",
+    "noTodos": "暂无任务运行",
+    "noSubagents": "暂无子代理运行",
+    "noFileChanges": "暂无文件改动",
+    "showDiff": "查看差异",
+    "expand": "展开状态面板",
+    "collapse": "收起状态面板",
+    "undoChanges": "撤销更改",
+    "undoConfirmTitle": "撤销文件更改",
+    "undoWillDelete": "此文件是新创建的，撤销将删除该文件。",
+    "undoWillRestore": "将恢复此文件到 Claude 修改之前的状态。",
+    "undoCannotUndo": "此操作无法撤销。",
+    "confirmUndo": "确认撤销",
+    "undoSuccess": "已撤销 {{fileName}} 的更改",
+    "undoFailed": "撤销失败: {{error}}",
+    "discardAll": "回撤全部",
+    "keepAll": "保存全部",
+    "discardAllConfirmTitle": "回撤全部更改",
+    "discardAllConfirmMessage": "将撤销所有文件的更改，此操作无法恢复。",
+    "keepAllConfirmTitle": "保存全部",
+    "keepAllConfirmMessage": "将当前改动作为新基准，后续改动从零开始记录。",
+    "discardAllSuccess": "已撤销所有文件更改",
+    "discardAllFailed": "撤销失败: {{error}}",
+    "keepAllSuccess": "已保存全部，改动记录已重置"
   },
   "skills": {
     "title": "Skills",

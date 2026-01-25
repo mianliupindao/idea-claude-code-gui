@@ -1,3 +1,115 @@
+##### **2026年1月25日（v0.1.6）**
+
+English:
+- [x] Add custom "Other" option to AskUserQuestion dialog with textarea for custom input
+- [x] Auto-detect fnm (Fast Node Manager) nodejs path (#265)
+- [x] Fix npm package specs quoting to preserve semver operators (^~><) on Windows (#258)
+- [x] Fix macOS JCEF zoom/layout recovery after resume (#248)
+- [x] Fix MCP plugin connection and invocation issues (#266)
+- [x] Extract shell execution logic to ShellExecutor utility class for better reusability
+- [x] Use toast notifications for error messages with type-based duration (error: 5s, warning: 3s, default: 2s)
+- [x] Improve MCP status service security: command whitelist validation, unified logging, reusable functions
+- [x] Add ReDoS protection with line length limits in mcp-status-service
+- [x] Replace regex-based JSON parsing with bracket matching algorithm for better security
+- [x] Add input length limits in AskUserQuestionDialog
+- [x] Improve NpmPermissionHelper with precompiled regex and quote escaping
+- [x] Extract Toast duration constants for better maintainability
+- [x] Add i18n translations for "Other" option (en, es, fr, hi, ja, zh, zh-TW)
+- [x] Change cancel button text to "Auto" across all languages
+
+中文:
+- [x] 在 AskUserQuestion 对话框中添加自定义 "Other" 选项，支持文本输入
+- [x] 自动检测 fnm（快速 Node 管理器）的 nodejs 路径 (#265)
+- [x] 修复 Windows 上 npm 包规格引用问题，保留 semver 操作符（^~><）(#258)
+- [x] 修复 macOS JCEF 休眠恢复后的缩放/布局问题 (#248)
+- [x] 修复 MCP 插件无法正常连接调用的问题 (#266)
+- [x] 提取 shell 执行逻辑到 ShellExecutor 工具类，提升代码复用性
+- [x] 使用 toast 通知替代错误消息，根据类型设置显示时长（错误: 5秒，警告: 3秒，默认: 2秒）
+- [x] 改进 MCP 状态服务安全性：命令白名单验证、统一日志系统、提取可复用函数
+- [x] 在 mcp-status-service 中添加 ReDoS 防护，限制行长度
+- [x] 用括号匹配算法替换基于正则的 JSON 解析，提升安全性
+- [x] 在 AskUserQuestionDialog 中添加输入长度限制
+- [x] 改进 NpmPermissionHelper，添加预编译正则和引号转义
+- [x] 提取 Toast 显示时长常量，提升可维护性
+- [x] 为 "Other" 选项添加多语言翻译（en、es、fr、hi、ja、zh、zh-TW）
+- [x] 将取消按钮文本统一更改为 "Auto"
+
+##### **2026年1月24日（v0.1.6-beta3）**
+
+English:
+- [x] Add StatusPanel with task tracking, subagent status, and file changes undo
+- [x] Add session index cache system with in-memory caching (5min TTL) and disk persistence
+- [x] Add BashToolGroupBlock for batch command display with timeline view
+- [x] Extract and display command-message tag content from user input
+- [x] Extract settings state management into custom hooks (useProviderManagement, useCodexProviderManagement, useAgentManagement)
+- [x] Add useIsToolDenied shared hook to reduce code duplication
+- [x] Add useFileChanges hook with single/batch undo support
+- [x] Add useSubagents hook for background task status tracking
+- [x] Fix cursor position preservation during input value sync and file tag rendering
+- [x] Fix permission handling issues (JSON parse error handling, stale state cleanup, React safety)
+- [x] Fix BashToolGroupBlock expanded item scrolling by increasing max-height
+- [x] Fix BridgeDirectoryResolver filesystem sync race condition
+- [x] Refactor: remove duplicate LOG.info/debugLog calls in permission services
+- [x] Refactor: extract permission timeout as named constants with cross-reference comments
+- [x] Clean up frontend console logs
+
+中文:
+- [x] 新增状态面板（StatusPanel）：支持任务跟踪、子代理状态显示和文件变更撤销
+- [x] 新增会话索引缓存系统：内存缓存（5分钟 TTL）+ 磁盘持久化
+- [x] 新增批量命令显示组件（BashToolGroupBlock）：支持时间线视图
+- [x] 提取并显示用户输入中的 command-message 标签内容
+- [x] 提取设置状态管理到自定义 hooks（useProviderManagement、useCodexProviderManagement、useAgentManagement）
+- [x] 新增 useIsToolDenied 共享 hook，减少代码重复
+- [x] 新增 useFileChanges hook，支持单个/批量撤销功能
+- [x] 新增 useSubagents hook，用于后台任务状态跟踪
+- [x] 修复输入框光标位置：输入值同步和文件标签渲染时保持光标位置
+- [x] 修复权限处理问题（JSON 解析错误处理、过期状态清理、React 安全性）
+- [x] 修复 BashToolGroupBlock 展开项滚动问题
+- [x] 修复 BridgeDirectoryResolver 文件系统同步竞态条件
+- [x] 重构：移除权限服务中的重复 LOG.info/debugLog 调用
+- [x] 重构：提取权限超时为命名常量并添加交叉引用注释
+- [x] 清理前端 console.log 语句
+
+##### **2026年1月22日（v0.1.6-beta2）**
+
+English:
+- [x] Add terminal support and enhance terminal monitoring features
+- [x] Add keyboard shortcuts for Quick Fix action
+- [x] Add RunConfigMonitorService to monitor Run/Debug service output
+- [x] Add dev mode detection and DevTools support
+- [x] Add Follow IDE theme option with reliable theme detection
+- [x] Add permission isolation per IDE session
+- [x] Filter @ file search results with .gitignore rules
+- [x] Add mermaid diagram rendering support
+- [x] Add send file path to CCG from project tree context menu
+- [x] Add sponsor section to settings with i18n support
+- [x] Fix Codex usage updates from result messages
+- [x] Fix: remove redundance in terminal output
+- [x] Fix: inject IDE theme at HTML load time to prevent flash
+- [x] Fix: downgrade Claude SDK to v0.2.3
+- [x] Fix: defer run-config monitoring to EDT
+- [x] Refactor: improve code quality, memory management, and security
+- [x] Refactor: improve PermissionService code quality
+
+中文:
+- [x] 添加终端支持并增强终端监控功能
+- [x] 添加 Quick Fix 操作的键盘快捷键
+- [x] 添加 RunConfigMonitorService 监控 Run/Debug 服务输出
+- [x] 添加开发模式检测和 DevTools 支持
+- [x] 添加跟随 IDE 主题选项，支持可靠的主题检测
+- [x] 实现每个 IDE 会话的权限隔离
+- [x] 根据 .gitignore 规则过滤 @ 文件搜索结果
+- [x] 添加 mermaid 图表渲染支持
+- [x] 添加从项目树右键菜单发送文件路径到 CCG 功能
+- [x] 在设置中添加赞助商部分（支持国际化）
+- [x] 修复 Codex 使用量统计更新问题
+- [x] 修复终端输出中的冗余内容
+- [x] 修复 HTML 加载时注入 IDE 主题以防止闪烁
+- [x] 修复：降级 Claude SDK 到 v0.2.3
+- [x] 修复：将 run-config 监控推迟到 EDT
+- [x] 重构：改进代码质量、内存管理和安全性
+- [x] 重构：改进 PermissionService 代码质量
+
 ##### **2026年1月19日（v0.1.6-beta1）**
 
 English:

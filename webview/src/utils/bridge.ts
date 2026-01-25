@@ -3,6 +3,29 @@ import { MessageTypes } from '../platform/types';
 
 const BRIDGE_UNAVAILABLE_WARNED = new Set<string>();
 
+/** Path traversal patterns to detect (including URL-encoded variants) */
+const PATH_TRAVERSAL_PATTERNS = [
+  '..',           // Direct traversal
+  '~',            // Home directory reference
+  '%2e%2e',       // URL-encoded ..
+  '%2E%2E',       // URL-encoded .. (uppercase)
+  '%252e%252e',   // Double URL-encoded ..
+];
+
+/**
+ * Validate file path doesn't contain path traversal patterns
+ * Defense-in-depth: backend also validates using canonical paths
+ */
+const isValidPath = (filePath: string): boolean => {
+  if (!filePath) return false;
+  // Check both original and decoded path for traversal patterns
+  const decodedPath = decodeURIComponent(filePath);
+  return !PATH_TRAVERSAL_PATTERNS.some(pattern =>
+    filePath.toLowerCase().includes(pattern.toLowerCase()) ||
+    decodedPath.toLowerCase().includes(pattern.toLowerCase())
+  );
+};
+
 /**
  * Internal function to call the bridge
  * Uses platform adapter for VSCode, falls back to window.sendToJava for IDEA
@@ -34,11 +57,8 @@ const callBridge = (payload: string) => {
     window.sendToJava(payload);
     return true;
   }
-
-  if (!BRIDGE_UNAVAILABLE_WARNED.has(payload)) {
-    console.warn('[Bridge] Bridge not available yet. payload=', payload.substring(0, 50));
-    BRIDGE_UNAVAILABLE_WARNED.add(payload);
-  }
+  // Track warned payloads to avoid spam, but don't log to console
+  BRIDGE_UNAVAILABLE_WARNED.add(payload);
   return false;
 };
 
@@ -50,7 +70,10 @@ export const openFile = (filePath?: string, line?: number) => {
   if (!filePath) {
     return;
   }
-
+  // Security: Validate file path
+  if (!isValidPath(filePath)) {
+    return;
+  }
   if (isVSCode()) {
     getAdapter().openFile(filePath, line);
   } else {
@@ -204,4 +227,22 @@ export const respondToPermission = (id: string, allowed: boolean, remember?: boo
   } else {
     sendToJava('permission_response', { id, allowed, remember });
   }
+};
+
+/**
+ * Undo changes for a single file
+ * @param filePath - Absolute path to the file
+ * @param status - File status: 'A' (added) or 'M' (modified)
+ * @param operations - Array of edit operations to reverse
+ */
+export const undoFileChanges = (
+  filePath: string,
+  status: 'A' | 'M',
+  operations: Array<{ oldString: string; newString: string; replaceAll?: boolean }>
+) => {
+  // Security: Validate file path (defense-in-depth, backend also validates)
+  if (!isValidPath(filePath)) {
+    return;
+  }
+  sendToJava('undo_file_changes', { filePath, status, operations });
 };

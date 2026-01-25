@@ -3,6 +3,7 @@ package com.github.claudecodegui.bridge;
 import com.intellij.openapi.diagnostic.Logger;
 import com.github.claudecodegui.model.NodeDetectionResult;
 import com.github.claudecodegui.util.PlatformUtils;
+import com.github.claudecodegui.util.ShellExecutor;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -170,44 +171,42 @@ public class NodeDetector {
             return null;
         }
 
-        try {
-            // 使用 -l（登录 shell）和 -i（交互式）确保加载用户配置
-            // 这样可以获取 nvm、fnm 等版本管理器配置的路径
-            ProcessBuilder pb = new ProcessBuilder(shellPath, "-l", "-c", "which node");
-            String methodDesc = shellName + " which 命令";
+        String methodDesc = shellName + " which 命令（登录+交互式 shell）";
+        LOG.info("  尝试方法: " + methodDesc);
 
-            LOG.info("  尝试方法: " + methodDesc);
-            Process process = pb.start();
+        // 使用 -l（登录 shell）和 -i（交互式）确保加载用户配置
+        // 这样可以获取 nvm、fnm 等版本管理器配置的路径
+        // fnm 需要交互式 shell 来执行 .zshrc 中的 eval "$(fnm env)" 初始化
+        List<String> command = new ArrayList<>();
+        command.add(shellPath);
+        command.add("-l"); // Login shell
+        command.add("-i"); // Interactive shell
+        command.add("-c");
+        command.add("which node");
 
-            try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                String path = reader.readLine();
-                if (path != null && !path.isEmpty()) {
-                    path = path.trim();
-                    // 排除 "node not found" 类似的错误信息
-                    if (path.startsWith("/") && !path.contains("not found")) {
-                        triedPaths.add(path);
+        ShellExecutor.ExecutionResult result = ShellExecutor.execute(
+                command,
+                ShellExecutor.createNodePathFilter(),
+                "  " + shellName,
+                ShellExecutor.DEFAULT_TIMEOUT_SECONDS,
+                true
+        );
 
-                        String version = verifyNodePath(path);
-                        if (version != null) {
-                            LOG.info("✓ 通过 " + methodDesc + " 找到 Node.js: " + path + " (" + version + ")");
-                            return NodeDetectionResult.success(
-                                path, version,
-                                NodeDetectionResult.DetectionMethod.WHICH_COMMAND,
-                                triedPaths
-                            );
-                        }
-                    }
-                }
+        if (result.isSuccess() && result.getOutput() != null) {
+            String nodePath = result.getOutput();
+            triedPaths.add(nodePath);
+
+            String version = verifyNodePath(nodePath);
+            if (version != null) {
+                LOG.info("✓ 通过 " + methodDesc + " 找到 Node.js: " + nodePath + " (" + version + ")");
+                return NodeDetectionResult.success(
+                        nodePath, version,
+                        NodeDetectionResult.DetectionMethod.WHICH_COMMAND,
+                        triedPaths
+                );
             }
-
-            boolean finished = process.waitFor(5, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-            }
-        } catch (Exception e) {
-            LOG.debug("  " + shellName + " 命令查找失败: " + e.getMessage());
         }
+
         return null;
     }
 

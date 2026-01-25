@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 /**
  * Claude Agent SDK bridge.
@@ -31,6 +32,28 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
     private static final String NODE_SCRIPT = "simple-query.js";
     private static final String SLASH_COMMANDS_CHANNEL_ID = "__slash_commands__";
     private static final String MCP_STATUS_CHANNEL_ID = "__mcp_status__";
+
+    /** Maximum characters to preview in log output */
+    private static final int LOG_PREVIEW_MAX_CHARS = 500;
+
+    /**
+     * Pattern to match sensitive data for log sanitization.
+     * Matches common sensitive field names followed by their values:
+     * - api_key, api-key, apikey
+     * - token, access_token, refresh_token
+     * - password, passwd
+     * - secret, client_secret
+     * - authorization, bearer
+     * - credential, credentials
+     * - private_key, private-key
+     * - access_key, access-key
+     */
+    private static final Pattern SENSITIVE_DATA_PATTERN = Pattern.compile(
+            "(api[_-]?key|token|access[_-]?token|refresh[_-]?token|password|passwd|secret|client[_-]?secret|" +
+            "authorization|bearer|credential|credentials|private[_-]?key|access[_-]?key)" +
+            "[\"']?\\s*[:=]\\s*[\"']?[^\"'\\s,}]{8,}",
+            Pattern.CASE_INSENSITIVE
+    );
 
     public ClaudeSDKBridge() {
         super(ClaudeSDKBridge.class);
@@ -237,12 +260,18 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             stdinInput.addProperty("prompt", prompt);
             String stdinJson = gson.toJson(stdinInput);
 
+            File workDir = getDirectoryResolver().findSdkDir();
+            if (workDir == null || !workDir.exists()) {
+                result.success = false;
+                result.error = "Bridge directory not ready or invalid";
+                return result;
+            }
+
             List<String> command = new ArrayList<>();
             command.add(node);
             command.add(NODE_SCRIPT);
 
             ProcessBuilder pb = new ProcessBuilder(command);
-            File workDir = getDirectoryResolver().findSdkDir();
             pb.directory(workDir);
             pb.redirectErrorStream(true);
             envConfigurator.updateProcessEnvironment(pb, node);
@@ -350,6 +379,13 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                 stdinInput.addProperty("prompt", prompt);
                 String stdinJson = gson.toJson(stdinInput);
 
+                File workDir = getDirectoryResolver().findSdkDir();
+                if (workDir == null || !workDir.exists()) {
+                    result.success = false;
+                    result.error = "Bridge directory not ready or invalid";
+                    return result;
+                }
+
                 List<String> command = new ArrayList<>();
                 command.add(node);
                 command.add(NODE_SCRIPT);
@@ -358,7 +394,6 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                 Set<String> existingTempMarkers = processManager.snapshotClaudeCwdFiles(processTempDir);
 
                 ProcessBuilder pb = new ProcessBuilder(command);
-                File workDir = getDirectoryResolver().findSdkDir();
                 pb.directory(workDir);
                 pb.redirectErrorStream(true);
 
@@ -547,6 +582,14 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                 String node = nodeDetector.findNodeExecutable();
                 File workDir = getDirectoryResolver().findSdkDir();
 
+                // Check if bridge directory is ready
+                if (workDir == null || !workDir.exists()) {
+                    result.success = false;
+                    result.error = "Bridge directory not ready or invalid. Please wait for extraction to complete or reinstall the plugin.";
+                    callback.onError(result.error);
+                    return result;
+                }
+
                 // Diagnostics
                 LOG.info("[ClaudeSDKBridge] Environment diagnostics:");
                 LOG.info("[ClaudeSDKBridge]   Node.js path: " + node);
@@ -578,6 +621,13 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                 }
                 String stdinJson = gson.toJson(stdinInput);
 
+                // Log prompt preview with sensitive data sanitized
+                String sanitizedJson = sanitizeSensitiveData(stdinJson);
+                String preview = sanitizedJson.length() > LOG_PREVIEW_MAX_CHARS
+                    ? sanitizedJson.substring(0, LOG_PREVIEW_MAX_CHARS) + "\n... (truncated, total: " + stdinJson.length() + " chars)"
+                    : sanitizedJson;
+                LOG.debug("[PROMPT] Sending to Node.js (" + stdinJson.length() + " chars):\n" + preview);
+
                 List<String> command = new ArrayList<>();
                 command.add(node);
                 command.add(new File(workDir, CHANNEL_SCRIPT).getAbsolutePath());
@@ -595,10 +645,10 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                     if (userWorkDir.exists() && userWorkDir.isDirectory()) {
                         pb.directory(userWorkDir);
                     } else {
-                        pb.directory(getDirectoryResolver().findSdkDir());
+                        pb.directory(workDir);
                     }
                 } else {
-                    pb.directory(getDirectoryResolver().findSdkDir());
+                    pb.directory(workDir);
                 }
 
                 Map<String, String> env = pb.environment();
@@ -819,6 +869,11 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
         try {
             String node = nodeDetector.findNodeExecutable();
 
+            File workDir = getDirectoryResolver().findSdkDir();
+            if (workDir == null || !workDir.exists()) {
+                throw new RuntimeException("Bridge directory not ready or invalid");
+            }
+
             List<String> command = new ArrayList<>();
             command.add(node);
             command.add(CHANNEL_SCRIPT);
@@ -828,7 +883,6 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             command.add(cwd != null ? cwd : "");
 
             ProcessBuilder pb = new ProcessBuilder(command);
-            File workDir = getDirectoryResolver().findSdkDir();
             pb.directory(workDir);
             pb.redirectErrorStream(true);
             envConfigurator.updateProcessEnvironment(pb, node);
@@ -902,9 +956,14 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                 stdinInput.addProperty("cwd", cwd != null ? cwd : "");
                 String stdinJson = gson.toJson(stdinInput);
 
+                File bridgeDir = getDirectoryResolver().findSdkDir();
+                if (bridgeDir == null || !bridgeDir.exists()) {
+                    LOG.warn("[SlashCommands] Bridge directory not ready or invalid");
+                    return new ArrayList<>();
+                }
+
                 List<String> command = new ArrayList<>();
                 command.add(node);
-                File bridgeDir = getDirectoryResolver().findSdkDir();
                 command.add(new File(bridgeDir, CHANNEL_SCRIPT).getAbsolutePath());
                 command.add("claude");
                 command.add("getSlashCommands");
@@ -1029,9 +1088,14 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                 stdinInput.addProperty("cwd", cwd != null ? cwd : "");
                 String stdinJson = this.gson.toJson(stdinInput);
 
+                File bridgeDir = getDirectoryResolver().findSdkDir();
+                if (bridgeDir == null || !bridgeDir.exists()) {
+                    LOG.warn("[McpStatus] Bridge directory not ready or invalid");
+                    return new ArrayList<>();
+                }
+
                 List<String> command = new ArrayList<>();
                 command.add(node);
-                File bridgeDir = getDirectoryResolver().findSdkDir();
                 command.add(new File(bridgeDir, CHANNEL_SCRIPT).getAbsolutePath());
                 command.add("claude");
                 command.add("getMcpServerStatus");
@@ -1161,6 +1225,13 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                 String node = nodeDetector.findNodeExecutable();
                 File workDir = getDirectoryResolver().findSdkDir();
 
+                // Check if bridge directory is ready
+                if (workDir == null || !workDir.exists()) {
+                    response.addProperty("success", false);
+                    response.addProperty("error", "Bridge directory not ready or invalid");
+                    return response;
+                }
+
                 LOG.info("[Rewind] Starting rewind operation");
                 LOG.info("[Rewind] Session ID: " + sessionId);
                 LOG.info("[Rewind] Target message ID: " + userMessageId);
@@ -1287,6 +1358,20 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
         if (endIdx == -1) return null;
 
         return text.substring(startIdx, endIdx);
+    }
+
+    /**
+     * Sanitize sensitive data from JSON string for logging.
+     * Replaces API keys, tokens, passwords, and secrets with [REDACTED].
+     *
+     * @param json The JSON string to sanitize
+     * @return Sanitized JSON string safe for logging
+     */
+    private String sanitizeSensitiveData(String json) {
+        if (json == null || json.isEmpty()) {
+            return json;
+        }
+        return SENSITIVE_DATA_PATTERN.matcher(json).replaceAll("$1: [REDACTED]");
     }
 
     /**

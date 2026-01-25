@@ -1,7 +1,8 @@
 import { useCallback, useRef } from 'react';
 import { escapeHtmlAttr } from '../utils/htmlEscape.js';
+import { getCursorOffset, setCursorOffset } from '../utils/selectionUtils.js';
 import { getFileIcon } from '../../../utils/fileIcons.js';
-import { icon_folder } from '../../../utils/icons.js';
+import { icon_folder, icon_terminal, icon_server } from '../../../utils/icons.js';
 import type { FileTagInfo } from '../types.js';
 
 interface UseFileTagsOptions {
@@ -126,11 +127,36 @@ export function useFileTags({
       // Get display filename (with line number, for display)
       const displayFileName = filePath.split(/[/\\]/).pop() || filePath;
 
-      // Determine if file or directory (using pure filename)
-      const isDirectory = !pureFileName.includes('.');
+      /**
+       * Protocol type detection for special references.
+       *
+       * Supported protocols:
+       * - terminal:// - Terminal session output
+       * - service://  - Run/Debug service output
+       *
+       * To add a new protocol type:
+       * 1. Add protocol check here (e.g., const isNewProtocol = pureFilePath.startsWith('newprotocol://'))
+       * 2. Add icon selection in the iconSvg logic below
+       * 3. Update backend ClaudeSession.java processReferences() method
+       * 4. Import the corresponding icon SVG
+       *
+       * Future protocol candidates:
+       * - git://      - Git diff/status output
+       * - browser://  - Browser/DevTools context
+       * - debug://    - Debug session variables
+       */
+      const isTerminal = pureFilePath.startsWith('terminal://');
+      const isService = pureFilePath.startsWith('service://');
+
+      // Determine if file or directory (only when not terminal/service)
+      const isDirectory = !isTerminal && !isService && !pureFileName.includes('.');
 
       let iconSvg = '';
-      if (isDirectory) {
+      if (isTerminal) {
+        iconSvg = icon_terminal;
+      } else if (isService) {
+        iconSvg = icon_server;
+      } else if (isDirectory) {
         iconSvg = icon_folder;
       } else {
         const extension = pureFileName.indexOf('.') !== -1 ? pureFileName.split('.').pop() : '';
@@ -165,6 +191,9 @@ export function useFileTags({
       newHTML += currentText.substring(lastIndex);
     }
 
+    // Preserve cursor before updating innerHTML to avoid jumping to end
+    const cursorOffset = getCursorOffset(editableRef.current);
+
     // Set flag before updating innerHTML to prevent triggering completion detection
     justRenderedTagRef.current = true;
     onCloseCompletions();
@@ -186,20 +215,23 @@ export function useFileTags({
       });
     });
 
-    // Restore cursor position to end
-    const selection = window.getSelection();
-    if (selection && editableRef.current.childNodes.length > 0) {
-      try {
-        const range = document.createRange();
-        const lastChild = editableRef.current.lastChild;
-        if (lastChild) {
-          range.setStartAfter(lastChild);
-          range.collapse(true);
-          selection.removeAllRanges();
-          selection.addRange(range);
+    // Restore cursor position if possible, otherwise fall back to end
+    const restored = cursorOffset >= 0 && setCursorOffset(editableRef.current, cursorOffset);
+    if (!restored) {
+      const selection = window.getSelection();
+      if (selection && editableRef.current.childNodes.length > 0) {
+        try {
+          const range = document.createRange();
+          const lastChild = editableRef.current.lastChild;
+          if (lastChild) {
+            range.setStartAfter(lastChild);
+            range.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+        } catch {
+          // Ignore cursor restore errors
         }
-      } catch {
-        // Ignore cursor restore errors
       }
     }
 

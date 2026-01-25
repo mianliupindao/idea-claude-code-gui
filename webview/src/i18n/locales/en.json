@@ -90,9 +90,11 @@
       "description": "Configure page theme, language and Node.js environment",
       "theme": {
         "label": "Theme",
-        "light": "Light Theme",
+        "system": "Follow IDE",
+        "systemDesc": "Automatically follow IDE theme",
+        "light": "Light",
         "lightDesc": "Fresh and bright, suitable for daytime use",
-        "dark": "Dark Theme",
+        "dark": "Dark",
         "darkDesc": "Eye-friendly, suitable for nighttime use"
       },
       "language": {
@@ -187,6 +189,11 @@
     "communityDesc": "Scan the QR code below to join the official WeChat group for the latest news and technical support",
     "communityQrTip": "Scan with WeChat to join the community",
     "communityQrAlt": "Official WeChat community QR code",
+    "sponsor": "Sponsor",
+    "sponsorDesc": "If this project helps you, consider sponsoring to support ongoing maintenance!",
+    "alipay": "Alipay",
+    "wechatPay": "WeChat Pay",
+    "paypal": "PayPal",
     "provider": {
       "currentConfig": "Current ClaudeCode Configuration",
       "loading": "Loading...",
@@ -408,10 +415,13 @@
     "title": "Claude has some questions for you",
     "progress": "Question {{current}} / {{total}}",
     "multiSelectHint": "You can select multiple options",
-    "cancel": "AI Auto Select",
+    "cancel": "Auto",
     "back": "Back",
     "next": "Next",
-    "submit": "Submit"
+    "submit": "Submit",
+    "otherOption": "Other",
+    "otherOptionDesc": "Enter a custom answer",
+    "customInputPlaceholder": "Enter your answer..."
   },
   "planApproval": {
     "title": "Plan Ready for Approval",
@@ -631,12 +641,47 @@
     "editPrefix": "Edit: {{fileName}}",
     "lineRange": "Lines {{start}}-{{end}}",
     "filePath": "File path:",
-    "unknownTool": "Unknown tool"
+    "unknownTool": "Unknown tool",
+    "bashGroupBatchRun": "Batch Run Commands",
+    "bashGroupBatchExecution": "Batch Execution",
+    "bashGroupCompleted": "completed",
+    "bashGroupAllCompleted": "All Completed",
+    "bashGroupFailed": "failed"
   },
   "todo": {
     "inProgress": "In Progress {{completed}}/{{total}} tasks",
     "allCompleted": "All Completed {{completed}}/{{total}} tasks",
     "stopped": "Stopped"
+  },
+  "statusPanel": {
+    "todoTab": "Plan",
+    "tasksTab": "Tasks",
+    "subagentTab": "Subagent",
+    "filesTab": "File Changes",
+    "editsTab": "Edits",
+    "noTodos": "No tasks running",
+    "noSubagents": "No subagents running",
+    "noFileChanges": "No file changes",
+    "showDiff": "Show Diff",
+    "expand": "Expand status panel",
+    "collapse": "Collapse status panel",
+    "undoChanges": "Undo Changes",
+    "undoConfirmTitle": "Undo File Changes",
+    "undoWillDelete": "This file was newly created. Undo will delete this file.",
+    "undoWillRestore": "This will restore the file to its state before Claude's modifications.",
+    "undoCannotUndo": "This action cannot be undone.",
+    "confirmUndo": "Confirm Undo",
+    "undoSuccess": "Undone changes to {{fileName}}",
+    "undoFailed": "Undo failed: {{error}}",
+    "discardAll": "Discard All",
+    "keepAll": "Keep All",
+    "discardAllConfirmTitle": "Discard All Changes",
+    "discardAllConfirmMessage": "This will undo all file changes. This action cannot be undone.",
+    "keepAllConfirmTitle": "Keep All",
+    "keepAllConfirmMessage": "Accept current changes as baseline. Future changes will be tracked from zero.",
+    "discardAllSuccess": "All changes discarded",
+    "discardAllFailed": "Discard failed: {{error}}",
+    "keepAllSuccess": "All changes kept, tracking reset"
   },
   "skills": {
     "title": "Skills",

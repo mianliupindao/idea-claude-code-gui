@@ -235,8 +235,56 @@ Thanks to all contributors who help make IDEA-Claude-Code-GUI better!
         <img src="https://avatars.githubusercontent.com/u/248376932?size=100" width="100" height="100" alt="geofqiu-hub" style="border-radius: 50%;" />
       </a>
     </td>
+    <td align="center">
+      <a href="https://github.com/1lck">
+        <img src="https://avatars.githubusercontent.com/u/159525154?size=100" width="100" height="100" alt="1lck" style="border-radius: 50%;" />
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://github.com/fz-lyle">
+        <img src="https://avatars.githubusercontent.com/u/35370530?size=100" width="100" height="100" alt="fz-lyle" style="border-radius: 50%;" />
+      </a>
+    </td>
   </tr>
 </table>
+
+---
+
+## Sponsor（赞助）
+
+If this project has been helpful to you, please consider sponsoring. Your support motivates me to keep maintaining it!
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="https://claudecodecn-1253302184.cos.ap-beijing.myqcloud.com/zfb.jpg" width="200" alt="Alipay">
+      <br>
+      <b>Alipay</b>
+    </td>
+    <td align="center">
+      <img src="https://claudecodecn-1253302184.cos.ap-beijing.myqcloud.com/wx.jpg" width="200" alt="WeChat">
+      <br>
+      <b>WeChat</b>
+    </td>
+    <td align="center">
+      <img src="https://claudecodecn-1253302184.cos.ap-beijing.myqcloud.com/paypal.png" width="200" alt="PayPal">
+      <br>
+      <b>PayPal</b>
+    </td>
+  </tr>
+</table>
+
+### Sponsors List
+
+Thanks to the following sponsors for their support ❤️
+
+<!-- SPONSORS:START -->
+| Name | Amount | Date |
+|------|--------|------|
+| Be the first! | - | - |
+<!-- SPONSORS:END -->
+
+> No matter the amount, I will add you to the sponsors list. Thank you for your support!
 
 ---
 

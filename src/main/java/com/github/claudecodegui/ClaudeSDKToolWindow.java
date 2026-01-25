@@ -2,13 +2,31 @@ package com.github.claudecodegui;
 
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.cache.SlashCommandCache;
+import com.github.claudecodegui.handler.AgentHandler;
+import com.github.claudecodegui.handler.CodexMcpServerHandler;
+import com.github.claudecodegui.handler.DependencyHandler;
+import com.github.claudecodegui.handler.DiffHandler;
+import com.github.claudecodegui.handler.FileExportHandler;
+import com.github.claudecodegui.handler.FileHandler;
+import com.github.claudecodegui.handler.HandlerContext;
+import com.github.claudecodegui.handler.HistoryHandler;
+import com.github.claudecodegui.handler.McpServerHandler;
+import com.github.claudecodegui.handler.MessageDispatcher;
+import com.github.claudecodegui.handler.PermissionHandler;
+import com.github.claudecodegui.handler.PromptEnhancerHandler;
+import com.github.claudecodegui.handler.ProviderHandler;
+import com.github.claudecodegui.handler.RewindHandler;
+import com.github.claudecodegui.handler.UndoFileHandler;
+import com.github.claudecodegui.handler.SessionHandler;
+import com.github.claudecodegui.handler.SettingsHandler;
+import com.github.claudecodegui.handler.SkillHandler;
+import com.github.claudecodegui.handler.TabHandler;
+import com.github.claudecodegui.permission.PermissionRequest;
+import com.github.claudecodegui.permission.PermissionService;
 import com.github.claudecodegui.provider.claude.ClaudeSDKBridge;
 import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.provider.common.MessageCallback;
 import com.github.claudecodegui.provider.common.SDKResult;
-import com.github.claudecodegui.handler.*;
-import com.github.claudecodegui.permission.PermissionRequest;
-import com.github.claudecodegui.permission.PermissionService;
 import com.github.claudecodegui.startup.BridgePreloader;
 import com.github.claudecodegui.ui.ErrorPanelBuilder;
 import com.github.claudecodegui.util.FontConfigService;
@@ -16,6 +34,7 @@ import com.github.claudecodegui.util.HtmlLoader;
 import com.github.claudecodegui.util.JBCefBrowserFactory;
 import com.github.claudecodegui.util.JsUtils;
 import com.github.claudecodegui.util.LanguageConfigService;
+import com.github.claudecodegui.util.PlatformUtils;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -66,7 +85,14 @@ import java.awt.dnd.DropTargetDropEvent;
 import java.io.File;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Claude SDK 聊天工具窗口
@@ -130,23 +156,79 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
         // 注册 JVM Shutdown Hook（只注册一次）
         registerShutdownHook();
 
-        ClaudeChatWindow chatWindow = new ClaudeChatWindow(project);
         ContentFactory contentFactory = ContentFactory.getInstance();
-        // Set the initial tab name to "AI1"
-        Content content = contentFactory.createContent(chatWindow.getContent(), TAB_NAME_PREFIX + "1", false);
-
-        // Set parent content for the first tab (important for multi-tab code snippet support)
-        chatWindow.setParentContent(content);
-
         ContentManager contentManager = toolWindow.getContentManager();
-        contentManager.addContent(content);
 
-        content.setDisposer(() -> {
-            ClaudeChatWindow window = instances.get(project);
-            if (window != null) {
-                window.dispose();
+        // 检查 ai-bridge 是否已准备好
+        if (BridgePreloader.isBridgeReady()) {
+            // ai-bridge 已准备好，直接创建聊天窗口
+            LOG.info("[ToolWindow] ai-bridge ready, creating chat window directly");
+            createChatWindowContent(project, toolWindow, contentFactory, contentManager);
+        } else {
+            // ai-bridge 还没准备好，显示加载界面
+            LOG.info("[ToolWindow] ai-bridge not ready, showing loading panel");
+            JPanel loadingPanel = createLoadingPanel();
+            Content loadingContent = contentFactory.createContent(loadingPanel, TAB_NAME_PREFIX + "1", false);
+            contentManager.addContent(loadingContent);
+
+            // 在后台触发解压并等待完成
+            ApplicationManager.getApplication().executeOnPooledThread(() -> {
+                try {
+                    // 触发解压（如果还没开始的话）
+                    BridgePreloader.getSharedResolver().findSdkDir();
+
+                    // 等待解压完成（最多等待 60 秒）
+                    CompletableFuture<Boolean> future = BridgePreloader.waitForBridgeAsync();
+                    Boolean ready = future.get(60, TimeUnit.SECONDS);
+
+                    if (project.isDisposed()) {
+                        return;
+                    }
+
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        if (project.isDisposed()) {
+                            return;
+                        }
+
+                        if (ready != null && ready) {
+                            LOG.info("[ToolWindow] ai-bridge ready, replacing loading panel with chat window");
+                            // 移除加载界面
+                            contentManager.removeContent(loadingContent, true);
+                            // 创建聊天窗口
+                            createChatWindowContent(project, toolWindow, contentFactory, contentManager);
+                        } else {
+                            LOG.error("[ToolWindow] ai-bridge preparation failed");
+                            // 显示错误信息
+                            updateLoadingPanelWithError(loadingPanel, "AI Bridge preparation failed. Please restart IDE.");
+                        }
+                    });
+                } catch (TimeoutException e) {
+                    LOG.error("[ToolWindow] ai-bridge preparation timeout");
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        if (!project.isDisposed()) {
+                            updateLoadingPanelWithError(loadingPanel, "AI Bridge preparation timeout. Please restart IDE.");
+                        }
+                    });
+                } catch (Exception e) {
+                    LOG.error("[ToolWindow] ai-bridge preparation error: " + e.getMessage());
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        if (!project.isDisposed()) {
+                            updateLoadingPanelWithError(loadingPanel, "Error: " + e.getMessage());
+                        }
+                    });
+                }
+            });
+        }
+
+        // Add DevTools action to ToolWindow title bar (only in development mode)
+        if (PlatformUtils.isPluginDevMode()) {
+            com.intellij.openapi.actionSystem.AnAction devToolsAction =
+                    com.intellij.openapi.actionSystem.ActionManager.getInstance()
+                            .getAction("ClaudeCodeGUI.OpenDevToolsAction");
+            if (devToolsAction != null) {
+                toolWindow.setTitleActions(java.util.List.of(devToolsAction));
             }
-        });
+        }
 
         // Add listener to manage tab closeable state based on tab count
         // When there's only one tab, disable the close button to prevent closing the last tab
@@ -179,6 +261,93 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
         }
 
         LOG.debug("[TabManager] Updated tab closeable state: count=" + tabCount + ", closeable=" + closeable);
+    }
+
+    /**
+     * 创建加载面板，在 ai-bridge 准备好之前显示
+     */
+    private JPanel createLoadingPanel() {
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBackground(com.github.claudecodegui.util.ThemeConfigService.getBackgroundColor());
+
+        JPanel centerPanel = new JPanel();
+        centerPanel.setLayout(new BoxLayout(centerPanel, BoxLayout.Y_AXIS));
+        centerPanel.setOpaque(false);
+
+        // 加载动画图标
+        JLabel iconLabel = new JLabel("\u2699");  // ⚙ 齿轮符号
+        iconLabel.setFont(iconLabel.getFont().deriveFont(48f));
+        iconLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        centerPanel.add(iconLabel);
+
+        centerPanel.add(Box.createVerticalStrut(16));
+
+        // 加载提示文字
+        JLabel textLabel = new JLabel("Preparing AI Bridge...(插件解压中...)");
+        textLabel.setFont(textLabel.getFont().deriveFont(14f));
+        textLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        centerPanel.add(textLabel);
+
+        panel.add(centerPanel);
+        return panel;
+    }
+
+    /**
+     * 更新加载面板显示错误信息
+     */
+    private void updateLoadingPanelWithError(JPanel loadingPanel, String errorMessage) {
+        loadingPanel.removeAll();
+
+        JPanel centerPanel = new JPanel();
+        centerPanel.setLayout(new BoxLayout(centerPanel, BoxLayout.Y_AXIS));
+        centerPanel.setOpaque(false);
+
+        // 错误图标
+        JLabel iconLabel = new JLabel("\u26A0");  // ⚠ 警告符号
+        iconLabel.setFont(iconLabel.getFont().deriveFont(48f));
+        iconLabel.setForeground(Color.ORANGE);
+        iconLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        centerPanel.add(iconLabel);
+
+        centerPanel.add(Box.createVerticalStrut(16));
+
+        // 错误信息
+        JLabel textLabel = new JLabel(errorMessage);
+        textLabel.setFont(textLabel.getFont().deriveFont(14f));
+        textLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        centerPanel.add(textLabel);
+
+        loadingPanel.add(centerPanel);
+        loadingPanel.revalidate();
+        loadingPanel.repaint();
+    }
+
+    /**
+     * 创建聊天窗口内容（从原来的 createToolWindowContent 提取）
+     */
+    private void createChatWindowContent(
+            @NotNull Project project,
+            @NotNull ToolWindow toolWindow,
+            ContentFactory contentFactory,
+            ContentManager contentManager
+    ) {
+        ClaudeChatWindow chatWindow = new ClaudeChatWindow(project);
+        Content content = contentFactory.createContent(chatWindow.getContent(), TAB_NAME_PREFIX + "1", false);
+
+        // Set parent content for the first tab (important for multi-tab code snippet support)
+        chatWindow.setParentContent(content);
+
+        contentManager.addContent(content);
+
+        content.setDisposer(() -> {
+            ClaudeChatWindow window = instances.get(project);
+            if (window != null) {
+                window.dispose();
+            }
+        });
+
+        // Initialize closeable state for the first tab
+        updateTabCloseableState(contentManager);
     }
 
     /**
@@ -247,12 +416,27 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
         private final HtmlLoader htmlLoader;
         private Content parentContent;
 
+        // Session ID for permission service cleanup
+        private volatile String sessionId = null;
+
         // Editor Event Listeners
         private Alarm contextUpdateAlarm;
         private MessageBusConnection connection;
 
         private JBCefBrowser browser;
         private ClaudeSession session;
+
+        // ===== Webview render watchdog (JCEF stall/black-screen recovery) =====
+        private static final long WEBVIEW_HEARTBEAT_TIMEOUT_MS = 45_000L;
+        private static final long WEBVIEW_WATCHDOG_INTERVAL_MS = 10_000L;
+        private static final long WEBVIEW_RECOVERY_COOLDOWN_MS = 60_000L;
+        private volatile long lastWebviewHeartbeatAtMs = System.currentTimeMillis();
+        private volatile long lastWebviewRafAtMs = System.currentTimeMillis();
+        private volatile String lastWebviewVisibility = null;
+        private volatile Boolean lastWebviewHasFocus = null;
+        private volatile int webviewStallCount = 0;
+        private volatile long lastWebviewRecoveryAtMs = 0L;
+        private volatile ScheduledFuture<?> webviewWatchdogFuture = null;
 
         // ===== 🔧 Streaming message update coalescing =====
         private static final int STREAM_MESSAGE_UPDATE_INTERVAL_MS = 50;
@@ -295,6 +479,9 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
             this.settingsService = new CodemossSettingsService();
             this.htmlLoader = new HtmlLoader(getClass());
             this.mainPanel = new JPanel(new BorderLayout());
+
+            // 设置 mainPanel 背景色，防止冷启动时闪白
+            this.mainPanel.setBackground(com.github.claudecodegui.util.ThemeConfigService.getBackgroundColor());
 
             initializeSession();
             loadNodePathFromSettings();
@@ -469,18 +656,27 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
         }
 
         private void setupPermissionService() {
-            PermissionService permissionService = PermissionService.getInstance(project);
+            String sessionId = this.claudeSDKBridge.getSessionId();
+
+            // Add defensive check for sessionId
+            if (sessionId == null || sessionId.isEmpty()) {
+                LOG.warn("Failed to get session ID from bridge, generating fallback UUID");
+                sessionId = java.util.UUID.randomUUID().toString();
+            }
+
+            this.sessionId = sessionId;  // Save session ID for cleanup on dispose
+            PermissionService permissionService = PermissionService.getInstance(this.project, sessionId);
             permissionService.start();
-            // 使用项目注册机制，支持多窗口场景
-            permissionService.registerDialogShower(project, (toolName, inputs) ->
-                permissionHandler.showFrontendPermissionDialog(toolName, inputs));
-            // 注册 AskUserQuestion 对话框显示器
-            permissionService.registerAskUserQuestionDialogShower(project, (requestId, questionsData) ->
-                permissionHandler.showAskUserQuestionDialog(requestId, questionsData));
-            // 注册 PlanApproval 对话框显示器
-            permissionService.registerPlanApprovalDialogShower(project, (requestId, planData) ->
-                permissionHandler.showPlanApprovalDialog(requestId, planData));
-            LOG.info("Started permission service with frontend dialog, AskUserQuestion dialog, and PlanApproval dialog for project: " + project.getName());
+            // Use project registration mechanism to support multi-window scenarios
+            permissionService.registerDialogShower(this.project, (toolName, inputs) ->
+                this.permissionHandler.showFrontendPermissionDialog(toolName, inputs));
+            // Register AskUserQuestion dialog shower
+            permissionService.registerAskUserQuestionDialogShower(this.project, (requestId, questionsData) ->
+                this.permissionHandler.showAskUserQuestionDialog(requestId, questionsData));
+            // Register PlanApproval dialog shower
+            permissionService.registerPlanApprovalDialogShower(this.project, (requestId, planData) ->
+                this.permissionHandler.showPlanApprovalDialog(requestId, planData));
+            LOG.info("Started permission service with frontend dialog, AskUserQuestion dialog, and PlanApproval dialog for project: " + this.project.getName());
         }
 
         private void initializeHandlers() {
@@ -514,6 +710,7 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
             messageDispatcher.registerHandler(new AgentHandler(handlerContext));
             messageDispatcher.registerHandler(new TabHandler(handlerContext));
             messageDispatcher.registerHandler(new RewindHandler(handlerContext));
+            messageDispatcher.registerHandler(new UndoFileHandler(handlerContext));
             messageDispatcher.registerHandler(new DependencyHandler(handlerContext));
 
             // 权限处理器（需要特殊回调）
@@ -720,9 +917,6 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
                 browser = JBCefBrowserFactory.create();
                 handlerContext.setBrowser(browser);
 
-                // 启用开发者工具（右键菜单）
-                browser.getJBCefClient().setProperty("allowRunningInsecureContent", true);
-
                 JBCefBrowserBase browserBase = browser;
                 JBCefJSQuery jsQuery = JBCefJSQuery.create(browserBase);
                 jsQuery.addHandler((msg) -> {
@@ -832,7 +1026,17 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
 
                 browser.loadHTML(htmlContent);
 
+                // Reset webview health markers and start watchdog once the browser is created.
+                lastWebviewHeartbeatAtMs = System.currentTimeMillis();
+                lastWebviewRafAtMs = lastWebviewHeartbeatAtMs;
+                webviewStallCount = 0;
+                startWebviewWatchdog();
+
                 JComponent browserComponent = browser.getComponent();
+
+                // 设置 webview 容器背景色，防止 HTML 加载前闪白
+                // 根据 IDE 主题设置背景色，与注入到 HTML 的颜色保持一致
+                browserComponent.setBackground(com.github.claudecodegui.util.ThemeConfigService.getBackgroundColor());
 
                 // 添加拖拽支持 - 获取完整文件路径
                 new DropTarget(browserComponent, new DropTargetAdapter() {
@@ -959,24 +1163,17 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
             iconLabel.setForeground(Color.WHITE);
             iconLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
 
-            JLabel titleLabel = new JLabel("JCEF 不可用");
+            JLabel titleLabel = new JLabel("当前IDE JCEF 模块未安装");
             titleLabel.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 18));
             titleLabel.setForeground(Color.WHITE);
             titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
 
             JTextArea messageArea = new JTextArea();
             messageArea.setText(
-                "当前环境不支持 JCEF (Java Chromium Embedded Framework)。\n\n" +
-                "可能的原因：\n" +
-                "• 使用了不支持 JCEF 的 IDE 版本或运行时\n" +
-                "• IDE 启动时使用了 -Dide.browser.jcef.enabled=false 参数\n" +
-                "• 系统环境缺少必要的依赖库\n\n" +
                 "解决方案：\n" +
-                "1. 确保使用支持 JCEF 的 IntelliJ IDEA 版本 (2020.2+)\n" +
-                "2. 检查 IDE 设置：Help → Find Action → Registry，\n" +
-                "   确保 ide.browser.jcef.enabled 为 true\n" +
-                "3. 尝试重启 IDE\n" +
-                "4. 如果使用 JetBrains Runtime，确保版本支持 JCEF"
+                "双击 Shift 键，搜索 Choose Boot Java Runtime for the IDE\n" +
+                "在弹出窗口的下拉列表中，选择一个标记有 with JCEF 的版本进行下载和安装。\n" +
+                "等待下载完成并点击确定，随后重启 Android Studio"
             );
             messageArea.setEditable(false);
             messageArea.setBackground(new Color(45, 45, 45));
@@ -1167,6 +1364,143 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
             }
         }
 
+        private void handleWebviewHeartbeat(String content) {
+            long now = System.currentTimeMillis();
+            lastWebviewHeartbeatAtMs = now;
+
+            if (content == null || content.isEmpty()) {
+                lastWebviewRafAtMs = now;
+                lastWebviewVisibility = null;
+                lastWebviewHasFocus = null;
+                return;
+            }
+
+            try {
+                JsonObject json = new Gson().fromJson(content, JsonObject.class);
+                if (json != null) {
+                    if (json.has("raf")) {
+                        lastWebviewRafAtMs = json.get("raf").getAsLong();
+                    } else {
+                        lastWebviewRafAtMs = now;
+                    }
+                    if (json.has("visibility")) {
+                        lastWebviewVisibility = json.get("visibility").getAsString();
+                    }
+                    if (json.has("focus")) {
+                        lastWebviewHasFocus = json.get("focus").getAsBoolean();
+                    }
+                }
+            } catch (Exception ignored) {
+                // Non-JSON heartbeat payload (backward compatibility)
+                lastWebviewRafAtMs = now;
+            }
+        }
+
+        private void startWebviewWatchdog() {
+            if (webviewWatchdogFuture != null) {
+                return;
+            }
+
+            webviewWatchdogFuture = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(() -> {
+                try {
+                    checkWebviewHealth();
+                } catch (Exception e) {
+                    LOG.debug("[WebviewWatchdog] Unexpected error: " + e.getMessage(), e);
+                }
+            }, WEBVIEW_WATCHDOG_INTERVAL_MS, WEBVIEW_WATCHDOG_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        }
+
+        private void checkWebviewHealth() {
+            if (disposed) return;
+            if (!mainPanel.isShowing()) return;
+
+            long now = System.currentTimeMillis();
+            long heartbeatAgeMs = now - lastWebviewHeartbeatAtMs;
+            long rafAgeMs = now - lastWebviewRafAtMs;
+
+            boolean visible = lastWebviewVisibility == null || "visible".equals(lastWebviewVisibility);
+            boolean focused = lastWebviewHasFocus == null || lastWebviewHasFocus;
+            if (!visible || !focused) {
+                return;
+            }
+
+            if (now - lastWebviewRecoveryAtMs < WEBVIEW_RECOVERY_COOLDOWN_MS) {
+                return;
+            }
+
+            boolean stalled = heartbeatAgeMs > WEBVIEW_HEARTBEAT_TIMEOUT_MS || rafAgeMs > WEBVIEW_HEARTBEAT_TIMEOUT_MS;
+            if (!stalled) {
+                webviewStallCount = 0;
+                return;
+            }
+
+            if (disposed) return;
+
+            webviewStallCount += 1;
+            String reason = "heartbeatAgeMs=" + heartbeatAgeMs + ", rafAgeMs=" + rafAgeMs;
+            LOG.warn("[WebviewWatchdog] Webview appears stalled (" + webviewStallCount + "), attempting recovery. " + reason);
+
+            lastWebviewRecoveryAtMs = now;
+            // Give the webview a grace window after initiating recovery to avoid repeated triggers.
+            lastWebviewHeartbeatAtMs = now;
+            lastWebviewRafAtMs = now;
+
+            if (webviewStallCount <= 1) {
+                reloadWebview("watchdog_reload");
+            } else {
+                recreateWebview("watchdog_recreate");
+                webviewStallCount = 0;
+            }
+        }
+
+        private void reloadWebview(String reason) {
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (disposed) return;
+                if (browser == null) {
+                    recreateWebview(reason + "_no_browser");
+                    return;
+                }
+                frontendReady = false;
+                try {
+                    browser.loadHTML(htmlLoader.loadChatHtml());
+                    mainPanel.revalidate();
+                    mainPanel.repaint();
+                } catch (Exception e) {
+                    LOG.warn("[WebviewWatchdog] Reload failed: " + e.getMessage(), e);
+                }
+            });
+        }
+
+        private void recreateWebview(String reason) {
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (disposed) return;
+
+                frontendReady = false;
+                try {
+                    if (browser != null) {
+                        try {
+                            mainPanel.remove(browser.getComponent());
+                        } catch (Exception ignored) {
+                        }
+                        try {
+                            browser.dispose();
+                        } catch (Exception e) {
+                            LOG.debug("[WebviewWatchdog] Failed to dispose old browser: " + e.getMessage(), e);
+                        }
+                        browser = null;
+                    }
+
+                    LOG.info("[WebviewWatchdog] Recreating webview (" + reason + ")");
+                    mainPanel.removeAll();
+                    createUIComponents();
+                    mainPanel.revalidate();
+                    mainPanel.repaint();
+                } catch (Exception e) {
+                    LOG.warn("[WebviewWatchdog] Recreate failed: " + e.getMessage(), e);
+                }
+            });
+        }
+
         private void handleJavaScriptMessage(String message) {
             // long receiveTime = System.currentTimeMillis();
 
@@ -1204,6 +1538,12 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
 
             String type = parts[0];
             String content = parts.length > 1 ? parts[1] : "";
+
+            // Webview heartbeat (used by watchdog to detect JCEF stalls/black screens)
+            if ("heartbeat".equals(type)) {
+                handleWebviewHeartbeat(content);
+                return;
+            }
 
             // [PERF] 性能日志：记录消息接收时间
             // if ("send_message".equals(type) || "send_message_with_attachments".equals(type)) {
@@ -1247,6 +1587,10 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
                         executePendingQuickFix(prompt, callback);
                     });
                 }
+
+                // Re-push the latest message snapshot after a webview reload/recreate.
+                // This ensures the UI can recover from a stalled/blank JCEF render state.
+                flushStreamMessageUpdates(null);
                 return;
             }
 
@@ -1329,6 +1673,9 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
             LOG.info("Preserving session state when loading history: mode=" + previousPermissionMode + ", provider=" + previousProvider + ", model=" + previousModel);
 
             callJavaScript("clearMessages");
+
+            // 清理所有待处理的权限请求，防止旧会话的请求干扰新会话
+            permissionHandler.clearPendingRequests();
 
             session = new ClaudeSession(project, claudeSDKBridge, codexSDKBridge);
 
@@ -1910,6 +2257,9 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
                     callJavaScript("showLoading", "false");
                 });
 
+                // 清理所有待处理的权限请求，防止旧会话的请求干扰新会话
+                permissionHandler.clearPendingRequests();
+
                 // 创建全新的 Session 对象
                 session = new ClaudeSession(project, claudeSDKBridge, codexSDKBridge);
 
@@ -1969,7 +2319,14 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
         }
 
         private void interruptDueToPermissionDenial() {
-            this.session.interrupt().thenRun(() -> ApplicationManager.getApplication().invokeLater(() -> {}));
+            this.session.interrupt().thenRun(() -> ApplicationManager.getApplication().invokeLater(() -> {
+                // 通知前端权限被拒绝，让前端标记未完成的工具调用为"中断"状态
+                callJavaScript("onPermissionDenied");
+                // Align with explicit interrupt behavior to clear streaming/loading UI state.
+                callJavaScript("onStreamEnd");
+                callJavaScript("showLoading", "false");
+                com.github.claudecodegui.notifications.ClaudeNotifier.clearStatus(project);
+            }));
         }
 
         /**
@@ -2018,9 +2375,6 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
                         "  try {" +
                         "    if (typeof " + callee + " === 'function') {" +
                         "      " + callee + "(" + argsJs + ");" +
-                        "      console.log('[Backend->Frontend] Successfully called " + functionName + "');" +
-                        "    } else {" +
-                        "      console.warn('[Backend->Frontend] Function " + functionName + " not found: ' + (typeof " + callee + "));" +
                         "    }" +
                         "  } catch (e) {" +
                         "    console.error('[Backend->Frontend] Failed to call " + functionName + ":', e);" +
@@ -2276,6 +2630,15 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
                 LOG.warn("Failed to dispose stream message update alarm: " + e.getMessage());
             }
 
+            try {
+                if (webviewWatchdogFuture != null) {
+                    webviewWatchdogFuture.cancel(true);
+                    webviewWatchdogFuture = null;
+                }
+            } catch (Exception e) {
+                LOG.debug("Failed to cancel webview watchdog: " + e.getMessage(), e);
+            }
+
             // 清理斜杠命令缓存
             if (slashCommandCache != null) {
                 slashCommandCache.dispose();
@@ -2284,12 +2647,20 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
 
             // 注销权限服务的 dialogShower、askUserQuestionDialogShower 和 planApprovalDialogShower，防止内存泄漏
             try {
-                PermissionService permissionService = PermissionService.getInstance(project);
-                permissionService.unregisterDialogShower(project);
-                permissionService.unregisterAskUserQuestionDialogShower(project);
-                permissionService.unregisterPlanApprovalDialogShower(project);
+                // Get permission service using sessionId to avoid deprecated method
+                if (this.sessionId != null && !this.sessionId.isEmpty()) {
+                    PermissionService permissionService = PermissionService.getInstance(project, this.sessionId);
+                    permissionService.unregisterDialogShower(project);
+                    permissionService.unregisterAskUserQuestionDialogShower(project);
+                    permissionService.unregisterPlanApprovalDialogShower(project);
+
+                    // Clean up the session instance from static map to prevent memory leak
+                    // This removes the PermissionService instance from instancesBySessionId
+                    PermissionService.removeInstance(this.sessionId);
+                    LOG.info("Removed PermissionService instance for sessionId: " + this.sessionId);
+                }
             } catch (Exception e) {
-                LOG.warn("Failed to unregister dialog showers: " + e.getMessage());
+                LOG.warn("Failed to unregister dialog showers or remove session instance: " + e.getMessage());
             }
 
             LOG.info("开始清理窗口资源，项目: " + project.getName());

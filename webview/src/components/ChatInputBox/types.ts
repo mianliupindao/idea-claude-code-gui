@@ -77,6 +77,8 @@ export type CompletionType =
   | 'directory'
   | 'command'
   | 'agent'
+  | 'terminal'
+  | 'service'
   | 'info'
   | 'separator'
   | 'section-header';
@@ -111,9 +113,9 @@ export interface FileItem {
   path: string;
   /** Absolute path (optional) */
   absolutePath?: string;
-  /** Type */
-  type: 'file' | 'directory';
-  /** Extension */
+  /** 类型 */
+  type: 'file' | 'directory' | 'terminal' | 'service';
+  /** 扩展名 */
   extension?: string;
 }
 
@@ -479,6 +481,11 @@ export interface ChatInputBoxProps {
   hasMessages?: boolean;
   /** Rewind file callback */
   onRewind?: () => void;
+
+  /** Whether StatusPanel is expanded */
+  statusPanelExpanded?: boolean;
+  /** Toggle StatusPanel expand/collapse */
+  onToggleStatusPanel?: () => void;
 
   /** SDK installed status (disable input when not installed) */
   sdkInstalled?: boolean;
