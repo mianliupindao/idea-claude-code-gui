@@ -104,14 +104,27 @@ export function McpSettingsSection({ currentProvider = 'claude' }: McpSettingsSe
     // Server status callback handler (Claude only)
     const handleServerStatusUpdate = (jsonStr: string) => {
       try {
-        const statusList: McpServerStatusInfo[] = JSON.parse(jsonStr);
+        const parsed = JSON.parse(jsonStr);
+        // Backend sends { statuses: [...] }, extract the array
+        const rawStatusList = Array.isArray(parsed)
+          ? parsed
+          : (parsed.statuses ?? []);
         const statusMap = new Map<string, McpServerStatusInfo>();
-        statusList.forEach((status) => {
-          statusMap.set(status.name, status);
+        rawStatusList.forEach((status: { id?: string; name?: string; status?: string; serverInfo?: { name: string; version: string } }) => {
+          // Backend may return 'id' instead of 'name', handle both
+          const key = status.name || status.id;
+          if (key) {
+            const statusInfo: McpServerStatusInfo = {
+              name: key,
+              status: (status.status as McpServerStatusInfo['status']) || 'pending',
+              serverInfo: status.serverInfo,
+            };
+            statusMap.set(key, statusInfo);
+          }
         });
         setServerStatus(statusMap);
         setStatusLoading(false);
-        console.log('[McpSettings] Loaded server status:', statusList);
+        console.log('[McpSettings] Loaded server status:', rawStatusList);
       } catch (error) {
         console.error('[McpSettings] Failed to parse server status:', error);
         setStatusLoading(false);

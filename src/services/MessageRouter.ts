@@ -164,6 +164,32 @@ export class MessageRouter {
       });
     });
 
+    // Legacy provider update (used by webview)
+    this.register('update_provider', async (message) => {
+      this._bridgeManager.send({
+        type: 'update_provider',
+        content: message.content,
+        requestId: message.requestId
+      });
+    });
+
+    // Thinking toggle
+    this.register('get_thinking_enabled', async (message) => {
+      this._bridgeManager.send({
+        type: 'get_thinking_enabled',
+        content: message.content ?? {},
+        requestId: message.requestId
+      });
+    });
+
+    this.register('set_thinking_enabled', async (message) => {
+      this._bridgeManager.send({
+        type: 'set_thinking_enabled',
+        content: message.content,
+        requestId: message.requestId
+      });
+    });
+
     // Permission response
     this.register('permissionResponse', async (message) => {
       this._bridgeManager.send({

@@ -181,7 +181,10 @@ export function useStreamingMessages(): UseStreamingMessagesReturn {
 
   // Helper: Patch assistant message for streaming
   const patchAssistantForStreaming = (assistant: ClaudeMessage): ClaudeMessage => {
-    const existingRaw = (assistant.raw && typeof assistant.raw === 'object') ? (assistant.raw as any) : { message: { content: [] } };
+    // Backend may send message without 'raw' wrapper, so check both assistant.raw and assistant itself
+    const existingRaw = (assistant.raw && typeof assistant.raw === 'object')
+      ? (assistant.raw as any)
+      : ((assistant as any).message ? assistant : { message: { content: [] } });
     const existingBlocks = extractRawBlocks(existingRaw);
     const newBlocks = buildStreamingBlocks(existingBlocks);
 

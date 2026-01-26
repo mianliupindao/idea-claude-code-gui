@@ -86,6 +86,29 @@ const MAX_AGENTS_MD_BYTES = 32 * 1024;
 // AGENTS.md 文件名搜索顺序
 const AGENTS_FILE_NAMES = ['AGENTS.override.md', 'AGENTS.md', 'CLAUDE.md'];
 
+const CODEMOSS_SETTINGS_FILE = join(homedir(), '.codemoss', 'settings.json');
+
+function readJsonFile(filePath, fallback = {}) {
+  try {
+    if (!existsSync(filePath)) {
+      return fallback;
+    }
+    const raw = readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return fallback;
+    }
+    return parsed;
+  } catch {
+    return fallback;
+  }
+}
+
+function getCodemossThinkingEnabled() {
+  const settings = readJsonFile(CODEMOSS_SETTINGS_FILE, {});
+  return settings.thinkingEnabled !== false;
+}
+
 /**
  * 查找 Git 仓库根目录
  * @param {string} startDir - 起始目录
@@ -390,7 +413,8 @@ export async function sendMessage(
     const pendingToolUseIdsByCommand = new Map();
     const emittedToolUseIds = new Set();
     const reasoningTextCache = new Map();
-    let reasoningObserved = false;
+    const thinkingEnabled = getCodemossThinkingEnabled();
+    let reasoningObserved = !thinkingEnabled;
 
     const emitMessage = (msg) => {
       console.log('[MESSAGE]', JSON.stringify(msg));
@@ -563,6 +587,9 @@ export async function sendMessage(
     };
 
     const emitThinkingBlock = (text) => {
+      if (!thinkingEnabled) {
+        return;
+      }
       console.log('[THINKING]', text);
       emitMessage({
         type: 'assistant',
@@ -580,6 +607,9 @@ export async function sendMessage(
     };
 
     const maybeEmitReasoning = (item) => {
+      if (!thinkingEnabled) {
+        return;
+      }
       if (!item || item.type !== 'reasoning') return;
       const raw = typeof item.text === 'string' ? item.text : '';
       const text = raw.trim();

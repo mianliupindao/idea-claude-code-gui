@@ -21,6 +21,7 @@ import * as readline from 'readline';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import { execFileSync, spawn } from 'child_process';
 import { parseToml, generateToml } from './utils/toml-utils.js';
 
@@ -3134,7 +3135,7 @@ function handleListFiles(content, requestId) {
 // ============================================
 
 function handleCreateNewSession(requestId) {
-  const sessionId = `session_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+  const sessionId = crypto.randomUUID();
   currentSessionId = sessionId;
   sendToHost('sessionCreated', { sessionId }, requestId);
 }
@@ -3373,6 +3374,14 @@ function handleUpdateProvider(content, requestId) {
     writeClaudeSettings(next);
     handleGetCurrentClaudeConfig(requestId);
     handleGetActiveClaudeProvider(requestId);
+  }
+  const nextAlwaysThinkingEnabled = updates?.settingsConfig?.alwaysThinkingEnabled;
+  if (activeId === id && typeof nextAlwaysThinkingEnabled === 'boolean') {
+    if (codemossSettings.thinkingEnabled !== nextAlwaysThinkingEnabled) {
+      codemossSettings.thinkingEnabled = nextAlwaysThinkingEnabled;
+      saveJsonFile(SETTINGS_FILE, codemossSettings);
+    }
+    sendToHost('thinkingEnabledUpdated', { enabled: nextAlwaysThinkingEnabled }, requestId);
   }
 
   const { providers } = getClaudeProvidersWithActiveFlag();
@@ -3664,9 +3673,11 @@ function handleToggleCodexMcpServer(content, requestId) {
 
 function handleGetMcpServerStatus(requestId) {
   const servers = getClaudeMcpServers(getWorkspaceRoot());
+  // Map status to frontend expected values: 'connected' | 'failed' | 'needs-auth' | 'pending'
   const statuses = servers.map((s) => ({
     id: s.id,
-    status: s.enabled ? 'running' : 'stopped'
+    name: s.name || s.id,
+    status: s.enabled ? 'connected' : 'failed'
   }));
   sendToHost('mcpServerStatusLoaded', { statuses }, requestId);
 }

@@ -358,7 +358,8 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
           }
 
           const lastAssistant = parsed[lastAssistantIdx];
-          const lastAssistantBlocks = extractRawBlocks(lastAssistant.raw);
+          // Backend may send message without 'raw' wrapper, check both lastAssistant.raw and lastAssistant itself
+          const lastAssistantBlocks = extractRawBlocks(lastAssistant.raw ?? lastAssistant);
           const toolUseCount = lastAssistantBlocks.filter((b) => b?.type === 'tool_use').length;
           if (toolUseCount < seenToolUseCountRef.current) {
             seenToolUseCountRef.current = toolUseCount;
