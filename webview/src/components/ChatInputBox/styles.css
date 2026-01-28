@@ -84,7 +84,7 @@
   border-radius: 8px;
   overflow: visible;
   position: relative;
-  margin: 0 auto;
+  width: 100%;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 

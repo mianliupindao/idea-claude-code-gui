@@ -1678,6 +1678,12 @@ async function handleMessage(message) {
         await handleSaveImportedProviders(content, requestId);
         break;
 
+      // === Heartbeat (from WebView) ===
+      case 'heartbeat':
+        // Silently acknowledge heartbeat without logging
+        // No need to send response, this is a one-way keep-alive signal
+        break;
+
       default:
         console.error(`[server] Unknown message type: ${type}`);
         // Send empty response instead of error to avoid breaking the UI
@@ -1694,8 +1700,10 @@ async function handleMessage(message) {
 // ============================================
 
 async function handleSendMessage(content, requestId) {
+  console.error(`[server] handleSendMessage started, requestId: ${requestId}`);
   const normalizedContent = normalizeSendMessageContent(content);
   const { text, sessionId, provider = currentProvider } = normalizedContent;
+  console.error(`[server] Message text length: ${text?.length || 0}, sessionId: ${sessionId}, provider: ${provider}`);
   const messageText = typeof text === 'string' ? text : '';
   const isCodexProvider = provider === 'codex' || provider === 'openai';
   const isClaudeProvider = !isCodexProvider;
@@ -1721,6 +1729,7 @@ async function handleSendMessage(content, requestId) {
   const streamingEnabled = settings.streamingEnabled !== false;
   const thinkingEnabled = settings.thinkingEnabled !== false;
 
+  console.error(`[server] Sending streamStart for session: ${sessionId}, streamingEnabled: ${streamingEnabled}`);
   sendToHost('streamStart', { sessionId }, requestId);
 
   // Intercept console.log to capture Claude SDK streaming output
@@ -1863,7 +1872,19 @@ async function handleSendMessage(content, requestId) {
       });
 
       const claudeCommand = attachments.length > 0 ? 'sendWithAttachments' : 'send';
-      await handleClaudeCommand(claudeCommand, [], stdinData);
+      console.error(`[server] Calling handleClaudeCommand: ${claudeCommand}`);
+      const commandStartTime = Date.now();
+
+      try {
+        await handleClaudeCommand(claudeCommand, [], stdinData);
+        const commandDuration = Date.now() - commandStartTime;
+        console.error(`[server] handleClaudeCommand completed in ${commandDuration}ms`);
+      } catch (error) {
+        const commandDuration = Date.now() - commandStartTime;
+        console.error(`[server] handleClaudeCommand failed after ${commandDuration}ms:`, error.message);
+        throw error;
+      }
+
       restoreConsoleLog();
 
       if (!streamingEnabled && bufferedContent) {
@@ -1932,13 +1953,16 @@ async function handleSendMessage(content, requestId) {
     }
   } catch (error) {
     restoreConsoleLog();
+    console.error(`[server] Error in handleSendMessage:`, error);
     sendToHost('streamChunk', {
       delta: `\n\nError: ${error.message}`,
       sessionId
     }, requestId);
   }
 
+  console.error(`[server] Sending streamEnd for session: ${sessionId}`);
   sendToHost('streamEnd', { sessionId }, requestId);
+  console.error(`[server] streamEnd sent successfully`);
 }
 
 function handleGetHistory(requestId) {

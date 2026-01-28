@@ -16,7 +16,8 @@ const sidebarItems: SidebarItem[] = [
   { key: 'usage', icon: 'codicon-graph', labelKey: 'settings.usage' },
   { key: 'mcp', icon: 'codicon-server', labelKey: 'settings.mcp' },
   { key: 'permissions', icon: 'codicon-shield', labelKey: 'settings.permissions' },
-  { key: 'commit', icon: 'codicon-git-commit', labelKey: 'settings.commit.title' },
+  // commit设置入口 - 已隐藏
+  // { key: 'commit', icon: 'codicon-git-commit', labelKey: 'settings.commit.title' },
   { key: 'agents', icon: 'codicon-robot', labelKey: 'settings.agents' },
   { key: 'skills', icon: 'codicon-book', labelKey: 'settings.skills' },
   { key: 'community', icon: 'codicon-comment-discussion', labelKey: 'settings.community' },

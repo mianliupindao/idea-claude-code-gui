@@ -726,15 +726,36 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
               // 🔧 使用 JSON 编码，保留换行符等特殊字符
               console.log('[THINKING_DELTA]', JSON.stringify(event.delta.thinking));
               lastThinkingContent += event.delta.thinking;
+            } else if (event.delta.type === 'input_json_delta' && event.delta.partial_json) {
+              // 🔧 NEW: 处理工具调用的 JSON 参数增量
+              console.log('[DEBUG] Received input_json_delta:', event.delta.partial_json.substring(0, 50));
             }
-            // input_json_delta 用于工具调用，暂不处理
           }
 
           // content_block_start: 新内容块开始（可用于识别 thinking 块）
           if (event.type === 'content_block_start' && event.content_block) {
             if (event.content_block.type === 'thinking') {
               console.log('[THINKING_START]');
+            } else if (event.content_block.type === 'text') {
+              console.log('[DEBUG] Text block started');
+            } else if (event.content_block.type === 'tool_use') {
+              console.log('[DEBUG] Tool use block started');
             }
+          }
+
+          // 🔧 NEW: content_block_stop - 内容块结束
+          if (event.type === 'content_block_stop') {
+            console.log('[DEBUG] Content block stopped, index:', event.index);
+          }
+
+          // 🔧 NEW: message_delta - 消息级别增量
+          if (event.type === 'message_delta') {
+            console.log('[DEBUG] Message delta:', JSON.stringify(event.delta));
+          }
+
+          // 🔧 NEW: message_stop - 消息完成
+          if (event.type === 'message_stop') {
+            console.log('[DEBUG] Message stream stopped');
           }
         }
 
@@ -749,7 +770,7 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
       // - 纯文本 assistant 消息不输出，避免覆盖流式状态
       let shouldOutputMessage = true;
       if (streamingEnabled && msg.type === 'assistant') {
-        const msgContent = msg.message?.content;
+        const msgContent = msg.message?.content ?? msg.content;
         const hasToolUse = Array.isArray(msgContent) && msgContent.some(block => block.type === 'tool_use');
         if (!hasToolUse) {
           shouldOutputMessage = false;
@@ -761,7 +782,7 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
 
       // 实时输出助手内容（非流式或完整消息）
       if (msg.type === 'assistant') {
-        const content = msg.message?.content;
+        const content = msg.message?.content ?? msg.content;
 
         if (Array.isArray(content)) {
           for (const block of content) {
@@ -775,8 +796,14 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
                 }
                 lastAssistantContent = currentText;
               } else if (streamingEnabled && hasStreamEvents) {
-                // 已通过 stream_event 输出过增量，避免重复；仅做状态对齐
+                // 🔧 IMPROVED: 即使收到了 stream_event，也检查是否有内容遗漏
+                // 如果当前文本比累积的更长，说明有内容没有通过 stream_event 传递，使用 fallback
                 if (currentText.length > lastAssistantContent.length) {
+                  const missedDelta = currentText.substring(lastAssistantContent.length);
+                  if (missedDelta) {
+                    console.log('[DEBUG] Fallback: detected missed content, length:', missedDelta.length);
+                    console.log('[CONTENT_DELTA]', JSON.stringify(missedDelta));
+                  }
                   lastAssistantContent = currentText;
                 }
               } else if (!streamingEnabled) {
@@ -794,7 +821,13 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
                 }
                 lastThinkingContent = thinkingText;
               } else if (streamingEnabled && hasStreamEvents) {
+                // 🔧 IMPROVED: 即使收到了 stream_event，也检查 thinking 内容是否有遗漏
                 if (thinkingText.length > lastThinkingContent.length) {
+                  const missedDelta = thinkingText.substring(lastThinkingContent.length);
+                  if (missedDelta) {
+                    console.log('[DEBUG] Fallback: detected missed thinking content, length:', missedDelta.length);
+                    console.log('[THINKING_DELTA]', JSON.stringify(missedDelta));
+                  }
                   lastThinkingContent = thinkingText;
                 }
               } else if (!streamingEnabled) {
@@ -1464,8 +1497,8 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
 
 	    	      // 🔧 流式模式下，assistant 消息需要特殊处理
 	    	      let shouldOutputMessage2 = true;
-	    	      if (streamingEnabled && msg.type === 'assistant') {
-	    	        const msgContent2 = msg.message?.content;
+    	      if (streamingEnabled && msg.type === 'assistant') {
+	    	        const msgContent2 = msg.message?.content ?? msg.content;
 	    	        const hasToolUse2 = Array.isArray(msgContent2) && msgContent2.some(block => block.type === 'tool_use');
 	    	        if (!hasToolUse2) {
 	    	          shouldOutputMessage2 = false;
@@ -1476,8 +1509,8 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
 	    	      }
 
 	    	      // 处理完整的助手消息
-	    	      if (msg.type === 'assistant') {
-	    	        const content = msg.message?.content;
+    	      if (msg.type === 'assistant') {
+	    	        const content = msg.message?.content ?? msg.content;
 
 	    	        if (Array.isArray(content)) {
 	    	          for (const block of content) {

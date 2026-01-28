@@ -2,8 +2,9 @@
   "name": "codemoss",
   "displayName": "CodeMoss（Claude Code GUI）",
   "description": "AI-powered coding assistant for VSCode with Claude and Codex support",
-  "version": "0.1.16",
+  "version": "0.1.7-fix1",
   "publisher": "codemoss",
+  "icon": "logo.png",
   "license": "MIT",
   "repository": {
     "type": "git",

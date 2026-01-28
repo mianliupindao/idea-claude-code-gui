@@ -74,7 +74,15 @@ export class BridgeManager extends EventEmitter {
 
     // Handle stderr (logs from bridge)
     this._process.stderr?.on('data', (data: Buffer) => {
-      Logger.debug('[ai-bridge]', data.toString().trim());
+      const logLine = data.toString().trim();
+      // Upgrade diagnostic logs to INFO level for visibility
+      if (logLine.includes('[DIAG]') || logLine.includes('[DEBUG]') || logLine.includes('[INTERCEPT]')) {
+        Logger.info('[ai-bridge]', logLine);
+      } else if (logLine.includes('[ERROR]') || logLine.includes('Error:')) {
+        Logger.error('[ai-bridge]', logLine);
+      } else {
+        Logger.debug('[ai-bridge]', logLine);
+      }
     });
 
     // Handle process exit

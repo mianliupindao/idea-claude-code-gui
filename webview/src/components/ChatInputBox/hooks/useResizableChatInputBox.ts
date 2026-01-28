@@ -15,7 +15,7 @@ interface Bounds {
   maxWrapperHeightPx: number;
 }
 
-const STORAGE_KEY = 'chat-input-box:size-v1';
+const STORAGE_KEY = 'chat-input-box:size-v2';
 
 const DEFAULT_MIN_WIDTH_PX = 320;
 const ABSOLUTE_MIN_WIDTH_PX = 240;
@@ -284,7 +284,7 @@ export function useResizableChatInputBox({
 
   const containerStyle = useMemo((): CSSProperties => {
     return {
-      width: size.widthPx == null ? undefined : `${size.widthPx}px`,
+      width: size.widthPx == null ? '100%' : `${size.widthPx}px`,
     };
   }, [size.widthPx]);
 

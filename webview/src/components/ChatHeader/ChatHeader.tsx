@@ -19,7 +19,7 @@ export function ChatHeader({
   t,
   onBack,
   onNewSession,
-  onNewTab,
+  onNewTab: _onNewTab,
   onHistory,
   onSettings,
 }: ChatHeaderProps): React.ReactElement | null {
@@ -53,13 +53,14 @@ export function ChatHeader({
             <button className="icon-button" onClick={onNewSession} data-tooltip={t('common.newSession')}>
               <span className="codicon codicon-plus" />
             </button>
-            <button
+            {/* 新标签页功能 - 已隐藏 */}
+            {/* <button
               className="icon-button"
               onClick={onNewTab}
               data-tooltip={t('common.newTab')}
             >
               <span className="codicon codicon-split-horizontal" />
-            </button>
+            </button> */}
             <button
               className="icon-button"
               onClick={onHistory}
