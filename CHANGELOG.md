@@ -1,3 +1,39 @@
+##### **2026年1月28日（v0.1.7-beta1）**
+
+English:
+
+✨ Features
+- Add chat input history navigation with ArrowUp/ArrowDown keys
+- Add tab rename and close confirmation features
+- Add AI-powered commit message generation
+- Add Codex SDK image attachment support
+
+🐛 Fixes
+- Fix MCP connection failure issue
+- Fix MCP invocation issue on Windows
+
+🔧 Improvements
+- Refactor ChatInputBox into modular hooks
+- Improve custom model input validation and security
+- Improve Action classes thread safety
+
+中文：
+
+✨ Features
+- 聊天输入框支持上下箭头键历史记录导航
+- 支持标签页重命名和关闭确认
+- AI 智能生成 Git 提交消息
+- Codex SDK 支持图片附件
+
+🐛 Fixes
+- 修复 MCP 连接失败问题
+- 修复 Windows 系统 MCP 无法调用的问题
+
+🔧 Improvements
+- 重构 ChatInputBox 组件，拆分为独立 hooks
+- 改进自定义模型输入验证和安全性
+- Action 类线程安全性优化
+
 ##### **2026年1月25日（v0.1.6）**
 
 English:

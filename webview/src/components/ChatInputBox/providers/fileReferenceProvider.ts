@@ -2,6 +2,7 @@ import type { FileItem, DropdownItemData } from '../types';
 import { getFileIcon, getFolderIcon } from '../../../utils/fileIcons';
 import { sendBridgeEvent } from '../../../utils/bridge';
 import { icon_terminal, icon_server } from '../../../utils/icons';
+import { debugError, debugLog, debugWarn } from '../../../utils/debug.js';
 
 // 请求队列管理
 let pendingResolve: ((files: FileItem[]) => void) | null = null;
@@ -13,7 +14,7 @@ let lastQuery: string = '';
  * 在组件初始化时调用，确保状态是干净的
  */
 export function resetFileReferenceState() {
-  console.log('[fileReferenceProvider] Resetting file reference state');
+  debugLog('[fileReferenceProvider] Resetting file reference state');
   pendingResolve = null;
   pendingReject = null;
   lastQuery = '';
@@ -35,7 +36,7 @@ function setupFileListCallback() {
         const result = files.length > 0 ? files : filterFiles(DEFAULT_FILES, lastQuery);
         pendingResolve?.(result);
       } catch (error) {
-        console.error('[fileReferenceProvider] Parse error:', error);
+        debugError('[fileReferenceProvider] Parse error:', error);
         pendingReject?.(error as Error);
       } finally {
         pendingResolve = null;
@@ -46,13 +47,13 @@ function setupFileListCallback() {
 }
 
 /**
- * 发送请求到 Java
+ * 发送请求到 Bridge
  */
 function sendToBridge(event: string, payload: Record<string, unknown>) {
   const payloadStr = JSON.stringify(payload);
   const sent = sendBridgeEvent(event, payloadStr);
   if (!sent) {
-    console.warn('[fileReferenceProvider] Bridge not available');
+    debugWarn('[fileReferenceProvider] Bridge not available');
   }
 }
 

@@ -184,12 +184,22 @@ interface Window {
    */
   updateMcpServerStatus?: (json: string) => void;
 
+  /**
+   * Update MCP server tools list
+   */
+  updateMcpServerTools?: (json: string) => void;
+
   mcpServerToggled?: (json: string) => void;
 
   /**
    * Update Codex MCP servers list (from ~/.codex/config.toml)
    */
   updateCodexMcpServers?: (json: string) => void;
+
+  /**
+   * Update Codex MCP server connection status
+   */
+  updateCodexMcpServerStatus?: (json: string) => void;
 
   /**
    * Codex MCP server toggled callback
@@ -232,6 +242,11 @@ interface Window {
    * Update send shortcut setting
    */
   updateSendShortcut?: (json: string) => void;
+
+  /**
+   * Update commit AI prompt configuration
+   */
+  updateCommitPrompt?: (json: string) => void;
 
   /**
    * Update current Claude config

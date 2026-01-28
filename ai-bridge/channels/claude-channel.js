@@ -7,7 +7,8 @@ import {
   sendMessageWithAttachments as claudeSendMessageWithAttachments,
   getSlashCommands as claudeGetSlashCommands,
   rewindFiles as claudeRewindFiles,
-  getMcpServerStatus as claudeGetMcpServerStatus
+  getMcpServerStatus as claudeGetMcpServerStatus,
+  getMcpServerTools as claudeGetMcpServerTools
 } from '../services/claude/message-service.js';
 import { getSessionMessages as claudeGetSessionMessages } from '../services/claude/session-service.js';
 
@@ -71,14 +72,9 @@ export async function handleClaudeCommand(command, args, stdinData) {
     }
 
     case 'rewindFiles': {
-      console.log('[CHANNEL] rewindFiles command received');
-      console.log('[CHANNEL] stdinData:', JSON.stringify(stdinData));
-      console.log('[CHANNEL] args:', JSON.stringify(args));
       const sessionId = stdinData?.sessionId || args[0];
       const userMessageId = stdinData?.userMessageId || args[1];
       const cwd = stdinData?.cwd || args[2] || null;
-      console.log('[CHANNEL] Parsed sessionId:', sessionId);
-      console.log('[CHANNEL] Parsed userMessageId:', userMessageId);
       if (!sessionId || !userMessageId) {
         console.log(JSON.stringify({
           success: false,
@@ -96,11 +92,17 @@ export async function handleClaudeCommand(command, args, stdinData) {
       break;
     }
 
+    case 'getMcpServerTools': {
+      const serverId = stdinData?.serverId || args[0] || null;
+      await claudeGetMcpServerTools(serverId);
+      break;
+    }
+
     default:
       throw new Error(`Unknown Claude command: ${command}`);
   }
 }
 
 export function getClaudeCommandList() {
-  return ['send', 'sendWithAttachments', 'getSession', 'getSlashCommands', 'rewindFiles', 'getMcpServerStatus'];
+  return ['send', 'sendWithAttachments', 'getSession', 'getSlashCommands', 'rewindFiles', 'getMcpServerStatus', 'getMcpServerTools'];
 }
