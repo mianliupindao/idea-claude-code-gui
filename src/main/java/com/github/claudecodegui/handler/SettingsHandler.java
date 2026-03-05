@@ -81,6 +81,7 @@ public class SettingsHandler extends BaseMessageHandler {
         // 提示音配置
         "get_sound_notification_config",
         "set_sound_notification_enabled",
+        "set_sound_only_when_unfocused",
         "set_selected_sound",
         "set_custom_sound_path",
         "test_sound",
@@ -215,6 +216,9 @@ public class SettingsHandler extends BaseMessageHandler {
                 return true;
             case "set_sound_notification_enabled":
                 handleSetSoundNotificationEnabled(content);
+                return true;
+            case "set_sound_only_when_unfocused":
+                handleSetSoundOnlyWhenUnfocused(content);
                 return true;
             case "set_selected_sound":
                 handleSetSelectedSound(content);
@@ -1607,12 +1611,14 @@ public class SettingsHandler extends BaseMessageHandler {
     private void handleGetSoundNotificationConfig() {
         try {
             boolean enabled = settingsService.getSoundNotificationEnabled();
+            boolean onlyWhenUnfocused = settingsService.getSoundOnlyWhenUnfocused();
             String selectedSound = settingsService.getSelectedSound();
             String customPath = settingsService.getCustomSoundPath();
 
             ApplicationManager.getApplication().invokeLater(() -> {
                 JsonObject response = new JsonObject();
                 response.addProperty("enabled", enabled);
+                response.addProperty("onlyWhenUnfocused", onlyWhenUnfocused);
                 response.addProperty("selectedSound", selectedSound);
                 response.addProperty("customSoundPath", customPath != null ? customPath : "");
                 callJavaScript("window.updateSoundNotificationConfig", escapeJs(gson.toJson(response)));
@@ -1622,6 +1628,7 @@ public class SettingsHandler extends BaseMessageHandler {
             ApplicationManager.getApplication().invokeLater(() -> {
                 JsonObject response = new JsonObject();
                 response.addProperty("enabled", false);
+                response.addProperty("onlyWhenUnfocused", false);
                 response.addProperty("selectedSound", "default");
                 response.addProperty("customSoundPath", "");
                 callJavaScript("window.updateSoundNotificationConfig", escapeJs(gson.toJson(response)));
@@ -1663,6 +1670,30 @@ public class SettingsHandler extends BaseMessageHandler {
             });
         } catch (Exception e) {
             LOG.error("[SettingsHandler] Failed to set sound notification enabled: " + e.getMessage(), e);
+            ApplicationManager.getApplication().invokeLater(() -> {
+                callJavaScript("window.showError", escapeJs("Failed to save sound notification config: " + e.getMessage()));
+            });
+        }
+    }
+
+    /**
+     * Set sound only-when-unfocused state.
+     */
+    private void handleSetSoundOnlyWhenUnfocused(String content) {
+        try {
+            JsonObject json = gson.fromJson(content, JsonObject.class);
+            boolean onlyWhenUnfocused = json == null || !json.has("onlyWhenUnfocused") || json.get("onlyWhenUnfocused").getAsBoolean();
+
+            settingsService.setSoundOnlyWhenUnfocused(onlyWhenUnfocused);
+            LOG.info("[SettingsHandler] Set sound only when unfocused: " + onlyWhenUnfocused);
+
+            ApplicationManager.getApplication().invokeLater(() -> {
+                JsonObject response = new JsonObject();
+                response.addProperty("onlyWhenUnfocused", onlyWhenUnfocused);
+                callJavaScript("window.updateSoundNotificationConfig", escapeJs(gson.toJson(response)));
+            });
+        } catch (Exception e) {
+            LOG.error("[SettingsHandler] Failed to set sound only when unfocused: " + e.getMessage(), e);
             ApplicationManager.getApplication().invokeLater(() -> {
                 callJavaScript("window.showError", escapeJs("Failed to save sound notification config: " + e.getMessage()));
             });
