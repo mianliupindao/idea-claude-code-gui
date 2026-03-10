@@ -182,6 +182,8 @@
         "enabled": "已开启",
         "disabled": "已关闭",
         "hint": "开启后，AI 完成任务时会播放提示音，方便您离开屏幕时也能知道任务已完成。",
+        "onlyWhenUnfocused": "仅在 IDE 未聚焦时播放",
+        "onlyWhenUnfocusedHint": "开启后，仅在 IDE 窗口未聚焦时播放提示音。",
         "selectSound": "提示音",
         "soundDefault": "默认",
         "soundChime": "清脆铃声",
@@ -249,6 +251,17 @@
     "mcpDesc": "配置和管理 Model Context Protocol 服务器",
     "permissions": "权限配置",
     "permissionsDesc": "管理 Claude Code 的文件访问和操作权限",
+    "codexPermissionsDesc": "管理 Codex 的权限和沙箱策略",
+    "permissionsPanel": {
+      "codexSandboxTitle": "Codex 沙箱模式",
+      "codexSandboxDesc": "控制 Codex 执行命令时的系统权限边界。推荐默认使用 workspace-write，仅在确有需要时开启 full access。",
+      "workspaceWriteTitle": "workspace-write（推荐）",
+      "workspaceWriteDesc": "只允许在工作区内读写，系统级操作会被限制，更安全。",
+      "fullAccessTitle": "danger-full-access",
+      "fullAccessDesc": "允许更高系统权限，可执行如 adb、docker 等需要额外权限的命令。",
+      "hint": "该设置仅影响 Codex 进程沙箱，不会改变 Claude Code 的权限策略。",
+      "claudeTip": "Claude Code 的交互审批模式请在聊天输入框的模式选择器中设置。"
+    },
     "commit": {
       "title": "Commit AI",
       "description": "配置 AI 生成 Git Commit 消息的行为",
@@ -336,6 +349,7 @@
       "emptyProvider": "暂无供应商配置",
       "notConfigured": "未配置",
       "apiKey": "API Key",
+      "apiKeyHelper": "API Key 助手",
       "baseUrl": "Base URL",
       "provider": "供应商",
       "source": "来源",
@@ -355,6 +369,7 @@
       "convertSuccess": "转换成功，已生成新 ID 并断开关联",
       "importing": "导入中...",
       "allProviders": "所有供应商",
+      "dragToSort": "拖拽排序",
       "import": "导入",
       "importFromCcSwitchUpdate": "从cc-switch导入/更新",
       "importFromCcSwitchFile": "选择 cc-switch.db 文件导入",
@@ -375,6 +390,49 @@
       "localProviderName": "本地 settings.json",
       "localProviderDescription": "直接使用 ~/.claude/settings.json 配置",
       "localProviderHelp": "使用本地供应商模式时：\n• 插件不会修改您的 ~/.claude/settings.json 文件\n• 您需要手动管理配置\n• 确保文件存在且包含有效的 JSON\n• 适合喜欢手动控制的高级用户",
+      "subscriptionTutorial": {
+        "entry": "订阅制账号教程",
+        "dialogTitle": "如何使用订阅制账号",
+        "tabAriaLabel": "订阅制账号教程标签",
+        "tabs": {
+          "claude": "Claude订阅制",
+          "codex": "Codex订阅制"
+        },
+        "code": {
+          "copy": "复制代码",
+          "copied": "已复制"
+        },
+        "providers": {
+          "claude": {
+            "title": "Claude Code 订阅制账号使用方式",
+            "item1": "首先在终端claude code cli 上登录成功 claude code 订阅制账号，然后可以正常在终端提问",
+            "item2": "确保 ~/.claude/settings.json 文件  .env 文件内容为空",
+            "item3": "重启IDEA，就可以正常提问了",
+            "emptyConfigCodeLabel": "~/.claude/settings.json",
+            "emptyConfigCode": "{\n  \"env\": {\n  }\n}",
+            "noteTitle": "特殊情况备注：",
+            "note1": "如果已经进行上述操作，但是本插件还是无法回复，可以将 ~/.claude/settings.json .env 内容改为：",
+            "proxyConfigCodeLabel": "~/.claude/settings.json",
+            "proxyConfigCode": "{\n  \"env\": {\n    \"HTTP_PROXY\": \"http://127.0.0.1:7897\",\n    \"HTTPS_PROXY\": \"http://127.0.0.1:7897\"\n  }\n}",
+            "issuePrefix": "如果还是不行，可以去GitHub留言排查：",
+            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+          },
+          "codex": {
+            "title": "Codex 订阅制账号使用方式",
+            "item1": "在终端 Codex CLI 运行 codex login 登录成功之后，可以正常在终端提问",
+            "item2": "重启 IDEA",
+            "item3": "即可正常对话",
+            "emptyConfigCodeLabel": "",
+            "emptyConfigCode": "",
+            "noteTitle": "",
+            "note1": "",
+            "proxyConfigCodeLabel": "",
+            "proxyConfigCode": "",
+            "issuePrefix": "如果还是不行，可以去GitHub留言排查：",
+            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+          }
+        }
+      },
       "importDialog": {
         "title": "导入 cc-switch 配置",
         "summary": "共识别到 {{total}} 个配置，其中",
@@ -573,6 +631,17 @@
       "deleteConfirmTitle": "确认删除",
       "deleteConfirmMessage": "确定要删除提示词 \"{{name}}\" 吗？此操作无法撤销。",
       "description": "创建常用提示词模板，在聊天输入框中输入 ! 即可快速选择并插入",
+      "global": "全局提示词",
+      "project": "项目提示词",
+      "projectScope": "项目提示词 - {{projectName}}",
+      "noProject": "无活动项目",
+      "copyToGlobal": "复制到全局",
+      "scopeLabel": {
+        "global": "全局",
+        "project": "项目"
+      },
+      "copyToGlobalSuccess": "已复制到全局提示词",
+      "projectPromptsUnavailable": "项目提示词在当前项目中不可用",
       "dialog": {
         "addTitle": "创建提示词",
         "editTitle": "编辑提示词",
@@ -977,7 +1046,8 @@
     "bashGroupAllCompleted": "全部完成",
     "bashGroupFailed": "失败",
     "promptLabel": "提示词",
-    "updatePlan": "更新计划"
+    "updatePlan": "更新计划",
+    "applyPatch": "应用补丁"
   },
   "todo": {
     "inProgress": "进行中 {{completed}}/{{total}} 个任务",
@@ -1178,9 +1248,9 @@
         "label": "gpt-5.3-codex",
         "description": "最新前沿智能编程模型，能力全面增强"
       },
-      "gpt53": {
-        "label": "gpt-5.3",
-        "description": "最新前沿模型，性能显著提升"
+      "gpt54": {
+        "label": "gpt-5.4",
+        "description": "最新前沿模型，能力进一步增强"
       },
       "gpt52codex": {
         "label": "gpt-5.2-codex",
@@ -1193,10 +1263,6 @@
       "gpt51codexMini": {
         "label": "gpt-5.1-codex-mini",
         "description": "针对Codex优化。更便宜、更快，但性能较差"
-      },
-      "gpt52": {
-        "label": "gpt-5.2",
-        "description": "最新前沿模型，知识储备全面提升"
       }
     }
   },
@@ -1235,8 +1301,8 @@
     },
     "acceptEdits": {
       "label": "自动编辑",
-      "tooltip": "Codex approval_policy=auto-edit：自动 apply_patch 写文件，命令仍需审批。",
-      "description": "自动处理文件创建/编辑，但运行命令前仍会询问。"
+      "tooltip": "Codex approval_policy=on-request：按需发起审批请求。",
+      "description": "平衡模式，保持正常编辑流程，同时在需要时进行审批。"
     },
     "bypassPermissions": {
       "label": "全自动",

@@ -200,13 +200,26 @@ public class ChatWindowDelegate {
      */
     public String setupPermissionService() {
         ClaudeSDKBridge claudeSDKBridge = host.getClaudeSDKBridge();
+        CodexSDKBridge codexSDKBridge = host.getCodexSDKBridge();
         Project project = host.getProject();
         String sessionId = claudeSDKBridge.getSessionId();
 
+        if ((sessionId == null || sessionId.isEmpty()) && codexSDKBridge != null) {
+            sessionId = codexSDKBridge.getSessionId();
+        }
+
         if (sessionId == null || sessionId.isEmpty()) {
-            LOG.warn("Failed to get session ID from bridge, generating fallback UUID");
+            LOG.warn("Failed to get session ID from bridges, generating fallback UUID");
             sessionId = java.util.UUID.randomUUID().toString();
         }
+
+        // Critical: align CLAUDE_SESSION_ID across Claude/Codex subprocesses so
+        // PermissionService can hit the same batch of request files.
+        claudeSDKBridge.setSessionId(sessionId);
+        if (codexSDKBridge != null) {
+            codexSDKBridge.setSessionId(sessionId);
+        }
+        LOG.info("Unified bridge sessionId for PermissionService routing: " + sessionId);
 
         PermissionService permissionService = PermissionService.getInstance(project, sessionId);
         permissionService.start();

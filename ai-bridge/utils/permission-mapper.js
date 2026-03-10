@@ -56,8 +56,8 @@ function normalizeUnifiedMode(mode) {
     return { core: UnifiedPermissionMode.YOLO, alias: 'bypassPermissions' };
   }
 
-  // acceptEdits (Agent Mode): auto-apply file modifications, commands still require confirmation
-  if (normalized === 'acceptedits') {
+  // acceptEdits / autoEdit (Agent Mode): auto-apply file modifications, commands still require confirmation
+  if (normalized === 'acceptedits' || normalized === 'autoedit') {
     return { core: UnifiedPermissionMode.DEFAULT, alias: 'acceptEdits' };
   }
 
@@ -142,13 +142,13 @@ export class CodexPermissionMapper {
       };
     }
 
-    // acceptEdits (Agent Mode): auto-apply file modifications, commands still require confirmation
+    // acceptEdits (Agent Mode): reduce approvals compared with default, while keeping safety checks
     // On Windows, use danger-full-access since sandbox is experimental
     if (alias === 'acceptEdits') {
       return {
         skipGitRepoCheck: true,
         sandbox: onWindows ? 'danger-full-access' : 'workspace-write',
-        approvalPolicy: 'auto-edit'  // Codex auto-edit mode
+        approvalPolicy: 'on-request'
       };
     }
 

@@ -216,6 +216,11 @@ interface Window {
   updateStreamingEnabled?: (json: string) => void;
 
   /**
+   * Update Codex sandbox mode setting
+   */
+  updateCodexSandboxMode?: (json: string) => void;
+
+  /**
    * Update send shortcut setting
    */
   updateSendShortcut?: (json: string) => void;
@@ -414,6 +419,21 @@ interface Window {
   updatePrompts?: (json: string) => void;
 
   /**
+   * Update global prompts list
+   */
+  updateGlobalPrompts?: (json: string) => void;
+
+  /**
+   * Update project prompts list
+   */
+  updateProjectPrompts?: (json: string) => void;
+
+  /**
+   * Update project info
+   */
+  updateProjectInfo?: (json: string) => void;
+
+  /**
    * Prompt operation result callback
    */
   promptOperationResult?: (json: string) => void;
@@ -496,6 +516,14 @@ interface Window {
    * Set to true during new session creation to prevent stale callbacks from writing old messages via updateMessages.
    */
   __sessionTransitioning?: boolean;
+
+  /**
+   * Session transition token (debug/logging only).
+   * Regenerated for each logical transition so callbacks can identify the active transition
+   * generation in logs. NOT used for guard logic — the boolean __sessionTransitioning flag
+   * is the actual guard.
+   */
+  __sessionTransitionToken?: string | null;
 
   /**
    * Rewind result callback - returns the result of a rewind operation

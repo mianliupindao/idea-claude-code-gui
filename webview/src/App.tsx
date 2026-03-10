@@ -12,6 +12,7 @@ import RewindSelectDialog, { type RewindableMessage } from './components/RewindS
 import { sendBridgeEvent } from './utils/bridge';
 import { insertNewlineAtCursor } from './hooks/useContextMenu.js';
 import { ChatInputBox } from './components/ChatInputBox';
+import { preloadSlashCommands, forceRefreshPrompts } from './components/ChatInputBox/providers';
 import {
   useScrollBehavior,
   useDialogManagement,
@@ -34,7 +35,7 @@ import {
   getContentBlocks as getContentBlocksUtil,
   mergeConsecutiveAssistantMessages,
 } from './utils/messageUtils';
-import { CLAUDE_MODELS, CODEX_MODELS } from './components/ChatInputBox/types';
+import { CLAUDE_MODELS, CODEX_MODELS, isValidPermissionMode } from './components/ChatInputBox/types';
 import type { Attachment, ChatInputBoxHandle, PermissionMode, ReasoningEffort, SelectedAgent } from './components/ChatInputBox/types';
 import { StatusPanel, StatusPanelErrorBoundary } from './components/StatusPanel';
 import { ToastContainer, type ToastMessage } from './components/Toast';
@@ -146,6 +147,8 @@ const App = () => {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   // Add-model dialog state (opened from model selector in chat view)
   const [addModelDialogOpen, setAddModelDialogOpen] = useState(false);
+  // Track if this is the first mount to avoid duplicate prompt refresh
+  const isFirstMountRef = useRef(true);
 
   // IDE theme state - prefer initial theme injected by Java
   const [ideTheme, setIdeTheme] = useState<'light' | 'dark' | null>(() => {
@@ -221,6 +224,7 @@ const App = () => {
   const [selectedClaudeModel, setSelectedClaudeModel] = useState(CLAUDE_MODELS[0].id);
   const [selectedCodexModel, setSelectedCodexModel] = useState(CODEX_MODELS[0].id);
   const [claudePermissionMode, setClaudePermissionMode] = useState<PermissionMode>('bypassPermissions');
+  const [codexPermissionMode, setCodexPermissionMode] = useState<PermissionMode>('default');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypassPermissions');
   // Codex reasoning effort (thinking depth)
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium');
@@ -351,6 +355,37 @@ const App = () => {
     };
   }, []);
 
+  // Preload slash commands and prompts on app mount to improve perceived performance
+  // Load data before user interacts with input box so it's immediately available
+  useEffect(() => {
+    preloadSlashCommands();
+    // Use forceRefreshPrompts to ensure project prompts are loaded
+    // even if project isn't ready immediately (bypasses retry limits and time intervals)
+    forceRefreshPrompts();
+
+    // Retry after 1 second to ensure project prompts are loaded
+    // (in case project wasn't ready on first attempt)
+    const retryTimer = setTimeout(() => {
+      forceRefreshPrompts();
+    }, 1000);
+
+    return () => clearTimeout(retryTimer);
+  }, []);
+
+  // Force refresh prompts when switching to chat view from other views
+  // Ensures prompts are up-to-date after editing in settings
+  useEffect(() => {
+    // Skip on first mount (already handled by the effect above)
+    if (isFirstMountRef.current) {
+      isFirstMountRef.current = false;
+      return;
+    }
+
+    if (currentView === 'chat') {
+      forceRefreshPrompts();
+    }
+  }, [currentView]);
+
   // Initialize theme and font scaling
   useEffect(() => {
     // Register IDE theme received callback
@@ -459,6 +494,8 @@ const App = () => {
       let restoredProvider = 'claude';
       let restoredClaudeModel = CLAUDE_MODELS[0].id;
       let restoredCodexModel = CODEX_MODELS[0].id;
+      let restoredClaudePermissionMode: PermissionMode = 'bypassPermissions';
+      let restoredCodexPermissionMode: PermissionMode = 'default';
       let initialPermissionMode: PermissionMode = 'bypassPermissions';
 
       if (saved) {
@@ -468,9 +505,15 @@ const App = () => {
         if (['claude', 'codex'].includes(state.provider)) {
           restoredProvider = state.provider;
           setCurrentProvider(state.provider);
-          if (state.provider === 'codex') {
-            initialPermissionMode = 'bypassPermissions';
-          }
+        }
+
+        if (isValidPermissionMode(state.claudePermissionMode)) {
+          restoredClaudePermissionMode = state.claudePermissionMode;
+        }
+        if (isValidPermissionMode(state.codexPermissionMode)) {
+          restoredCodexPermissionMode = state.codexPermissionMode === 'plan'
+            ? 'default'
+            : state.codexPermissionMode;
         }
 
         // Validate and restore Claude model (check both built-in and custom models)
@@ -494,6 +537,11 @@ const App = () => {
         }
       }
 
+      initialPermissionMode = restoredProvider === 'codex'
+        ? restoredCodexPermissionMode
+        : restoredClaudePermissionMode;
+      setClaudePermissionMode(restoredClaudePermissionMode);
+      setCodexPermissionMode(restoredCodexPermissionMode);
       setPermissionMode(initialPermissionMode);
 
       // Sync model state to backend on initialization to ensure frontend-backend consistency
@@ -530,11 +578,13 @@ const App = () => {
         provider: currentProvider,
         claudeModel: selectedClaudeModel,
         codexModel: selectedCodexModel,
+        claudePermissionMode,
+        codexPermissionMode,
       }));
     } catch {
       // Failed to save model selection state
     }
-  }, [currentProvider, selectedClaudeModel, selectedCodexModel]);
+  }, [currentProvider, selectedClaudeModel, selectedCodexModel, claudePermissionMode, codexPermissionMode]);
 
   // Load selected agent
   useEffect(() => {
@@ -576,6 +626,10 @@ const App = () => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
   }, []);
 
+  const clearToasts = useCallback(() => {
+    setToasts([]);
+  }, []);
+
   // Session management (create, load, delete, export, etc.)
   const {
     showNewSessionConfirm,
@@ -604,6 +658,12 @@ const App = () => {
     setCustomSessionTitle,
     setUsagePercentage,
     setUsageUsedTokens,
+    setUsageMaxTokens,
+    setStatus,
+    setLoading,
+    setIsThinking,
+    setStreamingActive,
+    clearToasts,
     addToast,
     t,
   });
@@ -616,6 +676,7 @@ const App = () => {
   useWindowCallbacks({
     t,
     addToast,
+    clearToasts,
     setMessages,
     setStatus,
     setLoading,
@@ -629,6 +690,7 @@ const App = () => {
     setUsageMaxTokens,
     setPermissionMode,
     setClaudePermissionMode,
+    setCodexPermissionMode,
     setSelectedClaudeModel,
     setSelectedCodexModel,
     setProviderConfigVersion,
@@ -775,8 +837,8 @@ const App = () => {
     const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
     // Keep a single source of truth for each request:
     // payload.permissionMode > sessionMode > default (backend fallback).
-    const effectivePermissionMode: PermissionMode = currentProvider === 'codex'
-      ? 'bypassPermissions'
+    const effectivePermissionMode: PermissionMode = currentProvider === 'codex' && requestedPermissionMode === 'plan'
+      ? 'default'
       : requestedPermissionMode;
     console.debug('[ModeSync][Frontend] send request mode', {
       provider: currentProvider,
@@ -964,8 +1026,10 @@ const App = () => {
    */
   const handleModeSelect = useCallback((mode: PermissionMode) => {
     if (currentProviderRef.current === 'codex') {
-      setPermissionMode('bypassPermissions');
-      sendBridgeEvent('set_mode', 'bypassPermissions');
+      const codexMode: PermissionMode = mode === 'plan' ? 'default' : mode;
+      setPermissionMode(codexMode);
+      setCodexPermissionMode(codexMode);
+      sendBridgeEvent('set_mode', codexMode);
       return;
     }
     setPermissionMode(mode);
@@ -995,13 +1059,15 @@ const App = () => {
 
     setCurrentProvider(providerId);
     sendBridgeEvent('set_provider', providerId);
-    const modeToSet = providerId === 'codex' ? 'bypassPermissions' : claudePermissionMode;
+    const modeToSet: PermissionMode = providerId === 'codex'
+      ? (codexPermissionMode === 'plan' ? 'default' : codexPermissionMode)
+      : claudePermissionMode;
     setPermissionMode(modeToSet);
     sendBridgeEvent('set_mode', modeToSet);
 
     const newModel = providerId === 'codex' ? selectedCodexModel : selectedClaudeModel;
     sendBridgeEvent('set_model', newModel);
-  }, [claudePermissionMode, selectedCodexModel, selectedClaudeModel]);
+  }, [claudePermissionMode, codexPermissionMode, selectedCodexModel, selectedClaudeModel]);
 
   /**
    * Handle reasoning effort selection (Codex only)

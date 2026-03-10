@@ -1,5 +1,8 @@
+import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CodexProviderConfig } from '../../../types/provider';
+import { sendToJava } from '../../../utils/bridge';
+import { useDragSort } from '../hooks/useDragSort';
 import styles from './style.module.less';
 
 interface CodexProviderSectionProps {
@@ -22,6 +25,24 @@ const CodexProviderSection = ({
   showHeader = true,
 }: CodexProviderSectionProps) => {
   const { t } = useTranslation();
+
+  const onSort = useCallback((orderedIds: string[]) => {
+    sendToJava('sort_codex_providers', { orderedIds });
+  }, []);
+
+  const {
+    localItems: localProviders,
+    draggedId: draggedProviderId,
+    dragOverId: dragOverProviderId,
+    handleDragStart,
+    handleDragOver,
+    handleDragLeave,
+    handleDrop,
+    handleDragEnd,
+  } = useDragSort({
+    items: codexProviders,
+    onSort,
+  });
 
   return (
     <div className={styles.configSection}>
@@ -50,12 +71,26 @@ const CodexProviderSection = ({
           </div>
 
           <div className={styles.providerList}>
-            {codexProviders.length > 0 ? (
-              codexProviders.map((provider) => (
+            {localProviders.length > 0 ? (
+              localProviders.map((provider) => (
                 <div
                   key={provider.id}
-                  className={`${styles.providerCard} ${provider.isActive ? styles.active : ''}`}
+                  className={[
+                    styles.providerCard,
+                    provider.isActive && styles.active,
+                    draggedProviderId === provider.id && styles.dragging,
+                    dragOverProviderId === provider.id && styles.dragOver,
+                  ].filter(Boolean).join(' ')}
+                  draggable={true}
+                  onDragStart={(e) => handleDragStart(e, provider.id)}
+                  onDragOver={(e) => handleDragOver(e, provider.id)}
+                  onDragLeave={handleDragLeave}
+                  onDrop={(e) => handleDrop(e, provider.id)}
+                  onDragEnd={handleDragEnd}
                 >
+                  <div className={styles.dragHandle} title={t('settings.provider.dragToSort')}>
+                    <span className="codicon codicon-gripper" />
+                  </div>
                   <div className={styles.providerInfo}>
                     <div className={styles.providerName}>{provider.name}</div>
                     {provider.remark && (

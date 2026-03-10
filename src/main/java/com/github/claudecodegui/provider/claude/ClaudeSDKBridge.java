@@ -119,10 +119,14 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
         }
     }
 
+    public void prewarmDaemonAsync(String cwd) {
+        prewarmDaemonAsync(cwd, null);
+    }
+
     /**
      * Prewarm daemon asynchronously to reduce first-message latency.
      */
-    public void prewarmDaemonAsync(String cwd) {
+    public void prewarmDaemonAsync(String cwd, String runtimeSessionEpoch) {
         // Cancel any previous prewarm in progress
         CompletableFuture<?> prev = prewarmFuture;
         if (prev != null && !prev.isDone()) {
@@ -135,6 +139,8 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                     JsonObject preconnectParams = new JsonObject();
                     preconnectParams.addProperty("cwd", cwd != null ? cwd : "");
                     preconnectParams.addProperty("sessionId", "");
+                    preconnectParams.addProperty("runtimeSessionEpoch",
+                            runtimeSessionEpoch != null ? runtimeSessionEpoch : "");
                     preconnectParams.addProperty("permissionMode", "");
                     preconnectParams.addProperty("model", "");
                     preconnectParams.addProperty("streaming", true);
@@ -177,7 +183,8 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                     );
 
                     preconnectFuture.get(45, TimeUnit.SECONDS);
-                    LOG.info("[ClaudeSDKBridge] Daemon prewarm completed");
+                    LOG.info("[ClaudeSDKBridge] Daemon prewarm completed for epoch="
+                            + (runtimeSessionEpoch != null ? runtimeSessionEpoch : "(none)"));
                 } else {
                     LOG.info("[ClaudeSDKBridge] Daemon prewarm skipped (daemon unavailable)");
                 }
@@ -185,6 +192,53 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                 LOG.debug("[ClaudeSDKBridge] Daemon prewarm failed: " + e.getMessage());
             }
         });
+    }
+
+    public void resetPersistentRuntime(String runtimeSessionEpoch) {
+        DaemonBridge db = daemonBridge;
+        if (db == null || !db.isAlive()) {
+            LOG.info("[ClaudeSDKBridge] Skip runtime reset; daemon unavailable for epoch="
+                    + (runtimeSessionEpoch != null ? runtimeSessionEpoch : "(none)"));
+            return;
+        }
+
+        try {
+            JsonObject params = new JsonObject();
+            params.addProperty("runtimeSessionEpoch", runtimeSessionEpoch != null ? runtimeSessionEpoch : "");
+            CompletableFuture<Boolean> resetFuture = db.sendCommand(
+                    "claude.resetRuntime",
+                    params,
+                    new DaemonBridge.DaemonOutputCallback() {
+                        @Override
+                        public void onLine(String line) {
+                            if (line != null && !line.isBlank()) {
+                                LOG.info("[ClaudeSDKBridge] Runtime reset line: " + line);
+                            }
+                        }
+
+                        @Override
+                        public void onStderr(String text) {
+                            if (text != null && !text.isBlank()) {
+                                LOG.debug("[ClaudeSDKBridge] Runtime reset stderr: " + text);
+                            }
+                        }
+
+                        @Override
+                        public void onError(String error) {
+                            LOG.warn("[ClaudeSDKBridge] Runtime reset error: " + error);
+                        }
+
+                        @Override
+                        public void onComplete(boolean success) {
+                            LOG.info("[ClaudeSDKBridge] Runtime reset completed: success=" + success
+                                    + ", epoch=" + (runtimeSessionEpoch != null ? runtimeSessionEpoch : "(none)"));
+                        }
+                    }
+            );
+            resetFuture.get(15, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            LOG.warn("[ClaudeSDKBridge] Runtime reset failed: " + e.getMessage());
+        }
     }
 
     @Override
@@ -666,7 +720,7 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             List<ClaudeSession.Attachment> attachments,
             MessageCallback callback
     ) {
-        return sendMessage(channelId, message, sessionId, cwd, attachments, null, null, null, null, null, callback);
+        return sendMessage(channelId, message, sessionId, null, cwd, attachments, null, null, null, null, null, false, callback);
     }
 
     /**
@@ -684,7 +738,7 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             String agentPrompt,
             MessageCallback callback
     ) {
-        return sendMessage(channelId, message, sessionId, cwd, attachments, permissionMode, model, openedFiles, agentPrompt, null, false, callback);
+        return sendMessage(channelId, message, sessionId, null, cwd, attachments, permissionMode, model, openedFiles, agentPrompt, null, false, callback);
     }
 
     /**
@@ -703,7 +757,7 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             Boolean streaming,
             MessageCallback callback
     ) {
-        return sendMessage(channelId, message, sessionId, cwd, attachments, permissionMode, model, openedFiles, agentPrompt, streaming, false, callback);
+        return sendMessage(channelId, message, sessionId, null, cwd, attachments, permissionMode, model, openedFiles, agentPrompt, streaming, false, callback);
     }
 
     /**
@@ -723,16 +777,39 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             Boolean disableThinking,
             MessageCallback callback
     ) {
+        return sendMessage(channelId, message, sessionId, null, cwd, attachments, permissionMode,
+                model, openedFiles, agentPrompt, streaming, disableThinking, callback);
+    }
+
+    /**
+     * Send message in existing channel (streaming response, with all options including streaming flag and disableThinking).
+     */
+    public CompletableFuture<SDKResult> sendMessage(
+            String channelId,
+            String message,
+            String sessionId,
+            String runtimeSessionEpoch,
+            String cwd,
+            List<ClaudeSession.Attachment> attachments,
+            String permissionMode,
+            String model,
+            JsonObject openedFiles,
+            String agentPrompt,
+            Boolean streaming,
+            Boolean disableThinking,
+            MessageCallback callback
+    ) {
         // Try daemon mode first (avoids per-request Node.js process spawning)
         DaemonBridge db = getDaemonBridge();
         if (db != null) {
-            return sendMessageViaDaemon(db, channelId, message, sessionId, cwd,
+            return sendMessageViaDaemon(db, channelId, message, sessionId, runtimeSessionEpoch, cwd,
                     attachments, permissionMode, model, openedFiles, agentPrompt,
                     streaming, disableThinking, callback);
         }
 
         // Fallback: per-process mode (spawns a new Node.js process per request)
         LOG.info("[ClaudeSDKBridge] Using per-process mode (daemon not available)");
+        final boolean[] errorAlreadyReported = {false};
         return CompletableFuture.supplyAsync(() -> {
             SDKResult result = new SDKResult();
             StringBuilder assistantContent = new StringBuilder();
@@ -782,6 +859,7 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                 JsonObject stdinInput = new JsonObject();
                 stdinInput.addProperty("message", message);
                 stdinInput.addProperty("sessionId", sessionId != null ? sessionId : "");
+                stdinInput.addProperty("runtimeSessionEpoch", runtimeSessionEpoch != null ? runtimeSessionEpoch : "");
                 stdinInput.addProperty("cwd", cwd != null ? cwd : "");
                 stdinInput.addProperty("permissionMode", permissionMode != null ? permissionMode : "");
                 stdinInput.addProperty("model", model != null ? model : "");
@@ -1017,11 +1095,10 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                             callback.onError(errorMsg);
                         }
                     } else {
-                        // Already had a SEND_ERROR, no need to append additional output
-                        if (exitCode == 0) {
-                            result.success = true;
-                            callback.onComplete(result);
-                        }
+                        // Already had a SEND_ERROR — error was already reported via onError.
+                        // Still need to signal completion so the handler cleans up stream state.
+                        result.success = exitCode == 0;
+                        callback.onComplete(result);
                     }
 
                     return result;
@@ -1033,10 +1110,15 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             } catch (Exception e) {
                 result.success = false;
                 result.error = e.getMessage();
+                errorAlreadyReported[0] = true;
                 callback.onError(e.getMessage());
                 return result;
             }
         }).exceptionally(ex -> {
+            if (errorAlreadyReported[0]) {
+                LOG.debug("[ClaudeSDKBridge] Skipping duplicate onError in exceptionally (already reported by catch)");
+                return new SDKResult();
+            }
             SDKResult errorResult = new SDKResult();
             errorResult.success = false;
             errorResult.error = ex.getCause() != null ? ex.getCause().getMessage() : ex.getMessage();
@@ -1572,6 +1654,7 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             String channelId,
             String message,
             String sessionId,
+            String runtimeSessionEpoch,
             String cwd,
             List<ClaudeSession.Attachment> attachments,
             String permissionMode,
@@ -1591,7 +1674,7 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             try {
                 // Build params (same fields as stdinInput in process mode)
                 JsonObject params = buildSendParams(
-                        message, sessionId, cwd, permissionMode, model,
+                        message, sessionId, runtimeSessionEpoch, cwd, permissionMode, model,
                         attachments, openedFiles, agentPrompt, streaming, disableThinking);
 
                 boolean hasAttachments = attachments != null && !attachments.isEmpty()
@@ -1734,7 +1817,7 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
      * Build the params JSON for a send command (shared between daemon and process modes).
      */
     private JsonObject buildSendParams(
-            String message, String sessionId, String cwd,
+            String message, String sessionId, String runtimeSessionEpoch, String cwd,
             String permissionMode, String model,
             List<ClaudeSession.Attachment> attachments,
             JsonObject openedFiles, String agentPrompt,
@@ -1743,6 +1826,7 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
         JsonObject params = new JsonObject();
         params.addProperty("message", message);
         params.addProperty("sessionId", sessionId != null ? sessionId : "");
+        params.addProperty("runtimeSessionEpoch", runtimeSessionEpoch != null ? runtimeSessionEpoch : "");
         params.addProperty("cwd", cwd != null ? cwd : "");
         params.addProperty("permissionMode", permissionMode != null ? permissionMode : "");
         params.addProperty("model", model != null ? model : "");

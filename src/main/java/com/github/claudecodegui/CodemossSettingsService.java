@@ -1,17 +1,21 @@
 package com.github.claudecodegui;
 
+import com.github.claudecodegui.model.ConflictStrategy;
 import com.github.claudecodegui.model.DeleteResult;
+import com.github.claudecodegui.model.PromptScope;
 import com.github.claudecodegui.settings.*;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.project.Project;
 
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -27,6 +31,8 @@ public class CodemossSettingsService {
 
     private static final Logger LOG = Logger.getInstance(CodemossSettingsService.class);
     private static final int CONFIG_VERSION = 2;
+    private static final String CODEX_SANDBOX_MODE_WORKSPACE_WRITE = "workspace-write";
+    private static final String CODEX_SANDBOX_MODE_DANGER_FULL_ACCESS = "danger-full-access";
 
     private final Gson gson;
 
@@ -37,7 +43,6 @@ public class CodemossSettingsService {
     private final CodexMcpServerManager codexMcpServerManager;
     private final WorkingDirectoryManager workingDirectoryManager;
     private final AgentManager agentManager;
-    private final PromptManager promptManager;
     private final SkillManager skillManager;
     private final McpServerManager mcpServerManager;
     private final ProviderManager providerManager;
@@ -72,9 +77,6 @@ public class CodemossSettingsService {
 
         // Initialize AgentManager
         this.agentManager = new AgentManager(gson, pathManager);
-
-        // Initialize PromptManager
-        this.promptManager = new PromptManager(gson, pathManager);
 
         // Initialize SkillManager
         this.skillManager = new SkillManager(
@@ -185,7 +187,7 @@ public class CodemossSettingsService {
             return createDefaultConfig();
         }
 
-        try (FileReader reader = new FileReader(configFile)) {
+        try (FileReader reader = new FileReader(configFile, StandardCharsets.UTF_8)) {
             JsonObject config = JsonParser.parseReader(reader).getAsJsonObject();
             LOG.info("[CodemossSettings] Successfully read config from: " + configPath);
             return config;
@@ -205,7 +207,7 @@ public class CodemossSettingsService {
         backupConfig();
 
         String configPath = getConfigPath();
-        try (FileWriter writer = new FileWriter(configPath)) {
+        try (FileWriter writer = new FileWriter(configPath, StandardCharsets.UTF_8)) {
             gson.toJson(config, writer);
             LOG.info("[CodemossSettings] Successfully wrote config to: " + configPath);
         } catch (Exception e) {
@@ -453,6 +455,74 @@ public class CodemossSettingsService {
         LOG.info("[CodemossSettings] Set auto open file enabled to " + enabled + " for project: " + projectPath);
     }
 
+    // ==================== Codex Sandbox Mode Config Management ====================
+
+    /**
+     * Get Codex sandbox mode configuration.
+     * @param projectPath project path
+     * @return sandbox mode (workspace-write or danger-full-access)
+     */
+    public String getCodexSandboxMode(String projectPath) throws IOException {
+        JsonObject config = readConfig();
+        String defaultMode = getDefaultCodexSandboxMode();
+
+        if (!config.has("codexSandboxMode")) {
+            return defaultMode;
+        }
+
+        JsonObject sandboxConfig = config.getAsJsonObject("codexSandboxMode");
+
+        if (projectPath != null && sandboxConfig.has(projectPath)) {
+            String mode = sandboxConfig.get(projectPath).getAsString();
+            return isValidCodexSandboxMode(mode) ? mode : defaultMode;
+        }
+
+        if (sandboxConfig.has("default")) {
+            String mode = sandboxConfig.get("default").getAsString();
+            return isValidCodexSandboxMode(mode) ? mode : defaultMode;
+        }
+
+        return defaultMode;
+    }
+
+    /**
+     * Set Codex sandbox mode configuration.
+     * @param projectPath project path
+     * @param sandboxMode sandbox mode (workspace-write or danger-full-access)
+     */
+    public void setCodexSandboxMode(String projectPath, String sandboxMode) throws IOException {
+        if (!isValidCodexSandboxMode(sandboxMode)) {
+            throw new IllegalArgumentException("Invalid Codex sandbox mode: " + sandboxMode);
+        }
+
+        JsonObject config = readConfig();
+
+        JsonObject sandboxConfig;
+        if (config.has("codexSandboxMode")) {
+            sandboxConfig = config.getAsJsonObject("codexSandboxMode");
+        } else {
+            sandboxConfig = new JsonObject();
+            config.add("codexSandboxMode", sandboxConfig);
+        }
+
+        if (projectPath != null) {
+            sandboxConfig.addProperty(projectPath, sandboxMode);
+        }
+        sandboxConfig.addProperty("default", sandboxMode);
+
+        writeConfig(config);
+        LOG.info("[CodemossSettings] Set Codex sandbox mode to " + sandboxMode + " for project: " + projectPath);
+    }
+
+    private boolean isValidCodexSandboxMode(String mode) {
+        return CODEX_SANDBOX_MODE_WORKSPACE_WRITE.equals(mode)
+                || CODEX_SANDBOX_MODE_DANGER_FULL_ACCESS.equals(mode);
+    }
+
+    private String getDefaultCodexSandboxMode() {
+        return CODEX_SANDBOX_MODE_WORKSPACE_WRITE;
+    }
+
     // ==================== Provider Management ====================
 
     public List<JsonObject> getClaudeProviders() throws IOException {
@@ -497,6 +567,10 @@ public class CodemossSettingsService {
 
     public int saveProviders(List<JsonObject> providers) throws IOException {
         return providerManager.saveProviders(providers);
+    }
+
+    public void saveProviderOrder(List<String> orderedIds) throws IOException {
+        providerManager.saveProviderOrder(orderedIds);
     }
 
     public boolean isLocalProviderActive() {
@@ -609,28 +683,149 @@ public class CodemossSettingsService {
 
     // ==================== Prompts Management ====================
 
+    /**
+     * Get a PromptManager for the specified scope.
+     * Creates managers on-demand using PromptManagerFactory.
+     *
+     * @param scope The prompt scope (GLOBAL or PROJECT)
+     * @param project The IntelliJ Project instance (required for PROJECT scope, can be null for GLOBAL scope)
+     * @return An AbstractPromptManager instance for the specified scope
+     */
+    public AbstractPromptManager getPromptManager(PromptScope scope, Project project) {
+        return PromptManagerFactory.create(scope, gson, pathManager, project);
+    }
+
+    /**
+     * Get prompts from the specified scope.
+     *
+     * @param scope The prompt scope (GLOBAL or PROJECT)
+     * @param project The IntelliJ Project instance (required for PROJECT scope, can be null for GLOBAL scope)
+     * @return List of prompts
+     * @throws IOException if reading fails
+     */
+    public List<JsonObject> getPrompts(PromptScope scope, Project project) throws IOException {
+        return getPromptManager(scope, project).getPrompts();
+    }
+
+    /**
+     * Add a prompt to the specified scope.
+     *
+     * @param prompt The prompt to add
+     * @param scope The prompt scope (GLOBAL or PROJECT)
+     * @param project The IntelliJ Project instance (required for PROJECT scope, can be null for GLOBAL scope)
+     * @throws IOException if writing fails
+     */
+    public void addPrompt(JsonObject prompt, PromptScope scope, Project project) throws IOException {
+        getPromptManager(scope, project).addPrompt(prompt);
+    }
+
+    /**
+     * Update a prompt in the specified scope.
+     *
+     * @param id The prompt ID
+     * @param updates The updates to apply
+     * @param scope The prompt scope (GLOBAL or PROJECT)
+     * @param project The IntelliJ Project instance (required for PROJECT scope, can be null for GLOBAL scope)
+     * @throws IOException if writing fails
+     */
+    public void updatePrompt(String id, JsonObject updates, PromptScope scope, Project project) throws IOException {
+        getPromptManager(scope, project).updatePrompt(id, updates);
+    }
+
+    /**
+     * Delete a prompt from the specified scope.
+     *
+     * @param id The prompt ID
+     * @param scope The prompt scope (GLOBAL or PROJECT)
+     * @param project The IntelliJ Project instance (required for PROJECT scope, can be null for GLOBAL scope)
+     * @return true if deleted, false if not found
+     * @throws IOException if writing fails
+     */
+    public boolean deletePrompt(String id, PromptScope scope, Project project) throws IOException {
+        return getPromptManager(scope, project).deletePrompt(id);
+    }
+
+    /**
+     * Get a prompt by ID from the specified scope.
+     *
+     * @param id The prompt ID
+     * @param scope The prompt scope (GLOBAL or PROJECT)
+     * @param project The IntelliJ Project instance (required for PROJECT scope, can be null for GLOBAL scope)
+     * @return The prompt JsonObject, or null if not found
+     * @throws IOException if reading fails
+     */
+    public JsonObject getPrompt(String id, PromptScope scope, Project project) throws IOException {
+        return getPromptManager(scope, project).getPrompt(id);
+    }
+
+    /**
+     * Batch import prompts to the specified scope.
+     *
+     * @param promptsToImport The prompts to import
+     * @param strategy The conflict resolution strategy
+     * @param scope The prompt scope (GLOBAL or PROJECT)
+     * @param project The IntelliJ Project instance (required for PROJECT scope, can be null for GLOBAL scope)
+     * @return A map containing the results of the import operation
+     * @throws IOException if writing fails
+     */
+    public Map<String, Object> batchImportPrompts(List<JsonObject> promptsToImport, ConflictStrategy strategy, PromptScope scope, Project project) throws IOException {
+        return getPromptManager(scope, project).batchImportPrompts(promptsToImport, strategy);
+    }
+
+    // ==================== Deprecated Backward-Compatible Methods ====================
+
+    /**
+     * Get a PromptManager (defaults to GLOBAL scope).
+     * @deprecated Use {@link #getPromptManager(PromptScope, Project)} instead
+     */
+    @Deprecated
+    public AbstractPromptManager getPromptManager() {
+        return getPromptManager(PromptScope.GLOBAL, null);
+    }
+
+    /**
+     * Get prompts (defaults to GLOBAL scope).
+     * @deprecated Use {@link #getPrompts(PromptScope, Project)} instead
+     */
+    @Deprecated
     public List<JsonObject> getPrompts() throws IOException {
-        return promptManager.getPrompts();
+        return getPrompts(PromptScope.GLOBAL, null);
     }
 
+    /**
+     * Add a prompt (defaults to GLOBAL scope).
+     * @deprecated Use {@link #addPrompt(JsonObject, PromptScope, Project)} instead
+     */
+    @Deprecated
     public void addPrompt(JsonObject prompt) throws IOException {
-        promptManager.addPrompt(prompt);
+        addPrompt(prompt, PromptScope.GLOBAL, null);
     }
 
+    /**
+     * Update a prompt (defaults to GLOBAL scope).
+     * @deprecated Use {@link #updatePrompt(String, JsonObject, PromptScope, Project)} instead
+     */
+    @Deprecated
     public void updatePrompt(String id, JsonObject updates) throws IOException {
-        promptManager.updatePrompt(id, updates);
+        updatePrompt(id, updates, PromptScope.GLOBAL, null);
     }
 
+    /**
+     * Delete a prompt (defaults to GLOBAL scope).
+     * @deprecated Use {@link #deletePrompt(String, PromptScope, Project)} instead
+     */
+    @Deprecated
     public boolean deletePrompt(String id) throws IOException {
-        return promptManager.deletePrompt(id);
+        return deletePrompt(id, PromptScope.GLOBAL, null);
     }
 
+    /**
+     * Get a prompt by ID (defaults to GLOBAL scope).
+     * @deprecated Use {@link #getPrompt(String, PromptScope, Project)} instead
+     */
+    @Deprecated
     public JsonObject getPrompt(String id) throws IOException {
-        return promptManager.getPrompt(id);
-    }
-
-    public PromptManager getPromptManager() {
-        return promptManager;
+        return getPrompt(id, PromptScope.GLOBAL, null);
     }
 
     // ==================== Sound Notification Management ====================
@@ -719,6 +914,45 @@ public class CodemossSettingsService {
     }
 
     /**
+     * Get whether sound should only play when IDE window is not focused.
+     * @return whether only-when-unfocused is enabled, default is false
+     */
+    public boolean getSoundOnlyWhenUnfocused() throws IOException {
+        JsonObject config = readConfig();
+
+        if (!config.has("soundNotification")) {
+            return false;
+        }
+
+        JsonObject soundConfig = config.getAsJsonObject("soundNotification");
+        if (soundConfig.has("onlyWhenUnfocused")) {
+            return soundConfig.get("onlyWhenUnfocused").getAsBoolean();
+        }
+
+        return false;
+    }
+
+    /**
+     * Set whether sound should only play when IDE window is not focused.
+     * @param enabled whether to enable
+     */
+    public void setSoundOnlyWhenUnfocused(boolean enabled) throws IOException {
+        JsonObject config = readConfig();
+
+        JsonObject soundConfig;
+        if (config.has("soundNotification")) {
+            soundConfig = config.getAsJsonObject("soundNotification");
+        } else {
+            soundConfig = new JsonObject();
+            config.add("soundNotification", soundConfig);
+        }
+
+        soundConfig.addProperty("onlyWhenUnfocused", enabled);
+        writeConfig(config);
+        LOG.info("[CodemossSettings] Set sound only when unfocused: " + enabled);
+    }
+
+    /**
      * Get selected sound ID.
      * @return sound ID (e.g. "default", "chime", "bell", "ding", "success", "custom"), defaults to "default"
      */
@@ -797,5 +1031,9 @@ public class CodemossSettingsService {
 
     public int saveCodexProviders(List<JsonObject> providers) throws IOException {
         return codexProviderManager.saveProviders(providers);
+    }
+
+    public void saveCodexProviderOrder(List<String> orderedIds) throws IOException {
+        codexProviderManager.saveProviderOrder(orderedIds);
     }
 }

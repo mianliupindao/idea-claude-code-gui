@@ -20,13 +20,8 @@ export const ModeSelect = ({ value, onChange, provider }: ModeSelectProps) => {
 
   const modeOptions = useMemo(() => {
     if (provider === 'codex') {
-      // Codex only has three modes: default, agent, auto (filter out plan mode)
-      return AVAILABLE_MODES.filter((mode) => mode.id !== 'plan').map((mode) => {
-        if (mode.id === 'default' || mode.id === 'acceptEdits') {
-          return { ...mode, disabled: true };
-        }
-        return mode;
-      });
+      // Codex supports default/acceptEdits/bypassPermissions; plan mode is not exposed yet.
+      return AVAILABLE_MODES.filter((mode) => mode.id !== 'plan');
     }
     return AVAILABLE_MODES;
   }, [provider]);

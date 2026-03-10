@@ -96,6 +96,33 @@ public class PathUtils {
         return path.startsWith("\\\\") || path.startsWith("//");
     }
 
+    /**
+     * Convert an MSYS2-style path to a Windows path.
+     * Examples: /c/Users/test -> C:\Users\test, /d/work -> D:\work
+     * Returns the original path if conversion is not needed.
+     *
+     * @param path the original path
+     * @return the converted Windows path, or the original path
+     */
+    public static String convertMsysToWindowsPath(String path) {
+        if (path == null || path.isEmpty() || !PlatformUtils.isWindows()) {
+            return path;
+        }
+
+        if (isWindowsPath(path) || isUncPath(path)) {
+            return path;
+        }
+
+        if (!path.matches("^/[a-zA-Z](/.*)?$")) {
+            return path;
+        }
+
+        char driveLetter = Character.toUpperCase(path.charAt(1));
+        String remainder = path.length() > 2 ? path.substring(2) : "";
+        String windowsPath = driveLetter + ":" + (remainder.isEmpty() ? "/" : remainder);
+        return normalizeToPlatform(windowsPath);
+    }
+
     // ==================== Path Length Checks ====================
 
     /**

@@ -143,7 +143,6 @@ export function McpSettingsSection({ currentProvider = 'claude' }: McpSettingsSe
 
   // Use tools list update hook
   useToolsUpdate({
-    isCodexMode,
     cacheKeys,
     setServerTools,
     onLog: addLog,
@@ -163,8 +162,8 @@ export function McpSettingsSection({ currentProvider = 'claude' }: McpSettingsSe
         // ignore
       }
 
-      // Auto-load tools list when expanding
-      if (server && !serverTools[serverId] && !isCodexMode) {
+      // Automatically load tool list when expanded.
+      if (server && !serverTools[serverId]) {
         loadServerTools(server, false);
       }
     } else {
@@ -172,7 +171,7 @@ export function McpSettingsSection({ currentProvider = 'claude' }: McpSettingsSe
       newExpanded.delete(serverId);
       setExpandedServers(newExpanded);
     }
-  }, [servers, expandedServers, serverTools, isCodexMode, cacheKeys, setExpandedServers, loadServerTools]);
+  }, [servers, expandedServers, serverTools, cacheKeys, setExpandedServers, loadServerTools]);
 
   // Edit server
   const handleEdit = useCallback((server: McpServer) => {

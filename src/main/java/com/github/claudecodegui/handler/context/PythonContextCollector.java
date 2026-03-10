@@ -7,6 +7,8 @@ import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.project.Project;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiFile;
+import com.intellij.psi.PsiNameIdentifierOwner;
+import com.intellij.psi.PsiNamedElement;
 import com.intellij.psi.util.PsiTreeUtil;
 import com.jetbrains.python.psi.*;
 import org.jetbrains.annotations.NotNull;
@@ -37,8 +39,8 @@ public class PythonContextCollector {
             if (scopeInfo != null && scopeInfo.size() > 0) {
                 semanticData.add("scope", scopeInfo);
             }
-        } catch (Throwable t) { 
-            // ignore 
+        } catch (Exception e) {
+            // ignore - optional context collection
         }
         
         // 2. Imports
@@ -47,8 +49,8 @@ public class PythonContextCollector {
             if (imports.size() > 0) {
                 semanticData.add("imports", imports);
             }
-        } catch (Throwable t) { 
-            // ignore 
+        } catch (Exception e) {
+            // ignore - optional context collection
         }
     }
     
@@ -61,50 +63,55 @@ public class PythonContextCollector {
         PyClass pyClass = PsiTreeUtil.getParentOfType(element, PyClass.class);
 
         if (pyFunction != null) {
-            // Note: PyFunction.getName() and getDocStringValue() are experimental APIs
-            // but are the standard way to access Python function information
-            try {
-                String funcName = pyFunction.getName();
+            // Use stable PsiNamedElement/PsiNameIdentifierOwner interfaces
+            // to avoid experimental API warnings from PyAstFunction
+            if (pyFunction instanceof PsiNamedElement) {
+                String funcName = ((PsiNamedElement) pyFunction).getName();
                 if (funcName != null) {
                     scope.addProperty("function", funcName);
                 }
-            } catch (Throwable t) {
-                // Fallback: try to get name from identifier
-                PsiElement nameId = pyFunction.getNameIdentifier();
+            } else if (pyFunction instanceof PsiNameIdentifierOwner) {
+                PsiElement nameId = ((PsiNameIdentifierOwner) pyFunction).getNameIdentifier();
                 if (nameId != null) {
                     scope.addProperty("function", nameId.getText());
                 }
             }
 
-            try {
-                String docString = pyFunction.getDocStringValue();
-                if (docString != null) {
-                    scope.addProperty("docstring", docString);
+            if (pyFunction instanceof PyDocStringOwner) {
+                try {
+                    String docString = ((PyDocStringOwner) pyFunction).getDocStringValue();
+                    if (docString != null) {
+                        scope.addProperty("docstring", docString);
+                    }
+                } catch (Exception e) {
+                    // ignore - docstring is optional
                 }
-            } catch (Throwable t) {
-                // ignore - docstring is optional
             }
 
             // Args
-            JsonArray args = new JsonArray();
-            for (PyParameter param : pyFunction.getParameterList().getParameters()) {
-                if (param.getName() != null) {
-                    args.add(param.getName());
+            try {
+                JsonArray args = new JsonArray();
+                for (PyParameter param : pyFunction.getParameterList().getParameters()) {
+                    if (param.getName() != null) {
+                        args.add(param.getName());
+                    }
                 }
+                scope.add("args", args);
+            } catch (Exception e) {
+                // ignore - args extraction may fail with experimental API
             }
-            scope.add("args", args);
         }
 
         if (pyClass != null) {
-            // Note: PyClass.getName() is experimental API
-            try {
-                String className = pyClass.getName();
+            // Use stable PsiNamedElement/PsiNameIdentifierOwner interfaces
+            // to avoid experimental API warnings from PyAstClass
+            if (pyClass instanceof PsiNamedElement) {
+                String className = ((PsiNamedElement) pyClass).getName();
                 if (className != null) {
                     scope.addProperty("class", className);
                 }
-            } catch (Throwable t) {
-                // Fallback: try to get name from identifier
-                PsiElement nameId = pyClass.getNameIdentifier();
+            } else if (pyClass instanceof PsiNameIdentifierOwner) {
+                PsiElement nameId = ((PsiNameIdentifierOwner) pyClass).getNameIdentifier();
                 if (nameId != null) {
                     scope.addProperty("class", nameId.getText());
                 }

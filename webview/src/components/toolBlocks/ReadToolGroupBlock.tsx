@@ -2,14 +2,18 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ToolInput, ToolResultBlock } from '../../types';
 import { openFile } from '../../utils/bridge';
-import { getFileName } from '../../utils/helpers';
 import { getFileIcon, getFolderIcon } from '../../utils/fileIcons';
+import { getToolLineInfo, resolveToolTarget } from '../../utils/toolPresentation';
 
 interface FileItem {
   filePath: string;
+  displayPath: string;
   cleanFileName: string;
+  openPath: string;
   isDirectory: boolean;
   lineInfo?: string;
+  lineStart?: number;
+  lineEnd?: number;
   isCompleted: boolean;
   isError: boolean;
 }
@@ -28,178 +32,50 @@ const MAX_VISIBLE_ITEMS = 3;
 const ITEM_HEIGHT = 28;
 
 /**
- * Extract file path from tool input
- */
-const extractFilePath = (input: ToolInput): string | undefined => {
-  // Try standard file path fields first (ensure they are strings, not objects)
-  let filePath =
-    (typeof input.file_path === 'string' ? input.file_path : undefined) ??
-    (typeof input.target_file === 'string' ? input.target_file : undefined) ??
-    (typeof input.path === 'string' ? input.path : undefined);
-
-  // If not found, try extracting from Codex command
-  if (!filePath && typeof input.command === 'string') {
-    const workdir = typeof input.workdir === 'string' ? input.workdir : undefined;
-    filePath = extractFilePathFromCommand(input.command, workdir);
-  }
-
-  return filePath;
-};
-
-/**
- * Extract file/directory path from command string (for Codex commands)
- */
-const extractFilePathFromCommand = (command: string | undefined, workdir?: string): string | undefined => {
-  if (!command || typeof command !== 'string') return undefined;
-
-  let trimmed = command.trim();
-
-  // Extract actual command from shell wrapper
-  const shellWrapperMatch = trimmed.match(/^\/bin\/(zsh|bash)\s+(?:-lc|-c)\s+['"](.+)['"]$/);
-  if (shellWrapperMatch) {
-    trimmed = shellWrapperMatch[2];
-  }
-
-  // Remove 'cd dir &&' prefix if present
-  const cdPrefixMatch = trimmed.match(/^cd\s+\S+\s+&&\s+(.+)$/);
-  if (cdPrefixMatch) {
-    trimmed = cdPrefixMatch[1].trim();
-  }
-
-  // Match pwd command
-  if (/^pwd\s*$/.test(trimmed)) {
-    return workdir ? workdir + '/' : undefined;
-  }
-
-  // Match ls command
-  const lsMatch = trimmed.match(/^ls\s+(?:-[a-zA-Z]+\s+)?(.+)$/);
-  if (lsMatch) {
-    const path = lsMatch[1].trim().replace(/^["']|["']$/g, '');
-    return path.endsWith('/') ? path : path + '/';
-  }
-
-  // Match ls without path
-  if (/^ls(?:\s+-[a-zA-Z]+)*\s*$/.test(trimmed)) {
-    return workdir ? workdir + '/' : undefined;
-  }
-
-  // Match tree command
-  if (/^tree\b/.test(trimmed)) {
-    const treeMatch = trimmed.match(/^tree\s+(.+)$/);
-    if (treeMatch) {
-      const path = treeMatch[1].trim().replace(/^["']|["']$/g, '');
-      return path.endsWith('/') ? path : path + '/';
-    }
-    return workdir ? workdir + '/' : undefined;
-  }
-
-  // Match sed -n command
-  const sedMatch = trimmed.match(/^sed\s+-n\s+['"]?(\d+)(?:,(\d+))?p['"]?\s+(.+)$/);
-  if (sedMatch) {
-    const startLine = sedMatch[1];
-    const endLine = sedMatch[2];
-    const path = sedMatch[3].trim().replace(/^["']|["']$/g, '');
-    return endLine ? `${path}:${startLine}-${endLine}` : `${path}:${startLine}`;
-  }
-
-  // Match cat command
-  const catMatch = trimmed.match(/^cat\s+(.+)$/);
-  if (catMatch) {
-    return catMatch[1].trim().replace(/^["']|["']$/g, '');
-  }
-
-  // Match head/tail commands
-  const headTailMatch = trimmed.match(/^(head|tail)\s+(?:.*\s)?([^\s-][^\s]*)$/);
-  if (headTailMatch) {
-    return headTailMatch[2].trim().replace(/^["']|["']$/g, '');
-  }
-
-  return undefined;
-};
-
-/**
  * Parse item to FileItem
  */
 const parseFileItem = (item: { input?: ToolInput; result?: ToolResultBlock | null }): FileItem | null => {
   const input = item.input;
   if (!input) return null;
 
-  const filePath = extractFilePath(input);
-  if (!filePath) return null;
+  const target = resolveToolTarget(input, 'read');
+  if (!target) return null;
 
-  const cleanFileName = getFileName(filePath)?.replace(/:\d+(-\d+)?$/, '') || filePath;
-  const isDirectory = filePath === '.' || filePath === '..' || filePath.endsWith('/');
-
-  // Extract line info from multiple sources
-  let lineInfo = '';
-
-  // Helper to parse number from string or number
-  const parseNum = (val: unknown): number | undefined => {
-    if (typeof val === 'number') return val;
-    if (typeof val === 'string' && /^\d+$/.test(val)) return parseInt(val, 10);
-    return undefined;
-  };
-
-  const offset = parseNum(input.offset);
-  const limit = parseNum(input.limit);
-
-  // 1. Check offset/limit fields (Claude Code standard)
-  if (offset !== undefined && limit !== undefined) {
-    const startLine = offset + 1;
-    const endLine = offset + limit;
-    lineInfo = `L${startLine}-${endLine}`;
-  }
-  // 2. Check line/lines field
-  else if (input.line !== undefined || input.lines !== undefined) {
-    const line = input.line ?? input.lines;
-    const lineNum = parseNum(line);
-    if (lineNum !== undefined) {
-      lineInfo = `L${lineNum}`;
-    } else if (typeof line === 'string') {
-      lineInfo = line.startsWith('L') ? line : `L${line}`;
-    }
-  }
-  // 3. Check start_line/end_line fields
-  else if (input.start_line !== undefined) {
-    const start = parseNum(input.start_line);
-    const end = parseNum(input.end_line);
-    if (start !== undefined) {
-      if (end !== undefined && end !== start) {
-        lineInfo = `L${start}-${end}`;
-      } else {
-        lineInfo = `L${start}`;
-      }
-    }
-  }
-  // 4. Extract from file path suffix (e.g., "file.txt:300-370")
-  else if (/:\d+(-\d+)?$/.test(filePath)) {
-    const match = filePath.match(/:(\d+)(?:-(\d+))?$/);
-    if (match) {
-      const startLine = match[1];
-      const endLine = match[2];
-      lineInfo = endLine ? `L${startLine}-${endLine}` : `L${startLine}`;
-    }
-  }
+  const lineInfoValue = getToolLineInfo(input, target);
+  const lineInfo = lineInfoValue.start
+    ? (lineInfoValue.end && lineInfoValue.end !== lineInfoValue.start
+      ? `L${lineInfoValue.start}-${lineInfoValue.end}`
+      : `L${lineInfoValue.start}`)
+    : '';
 
   // Determine completion status
   const isCompleted = item.result !== undefined && item.result !== null;
   const isError = isCompleted && item.result?.is_error === true;
 
-  return { filePath, cleanFileName, isDirectory, lineInfo, isCompleted, isError };
+  return {
+    filePath: target.rawPath,
+    displayPath: target.displayPath,
+    cleanFileName: target.cleanFileName,
+    openPath: target.openPath,
+    isDirectory: target.isDirectory,
+    lineInfo,
+    lineStart: lineInfoValue.start,
+    lineEnd: lineInfoValue.end,
+    isCompleted,
+    isError,
+  };
 };
 
 /**
- * Get file icon SVG
+ * Get file icon SVG by file name (with extension).
  */
-const getFileIconSvg = (filePath: string, isDirectory: boolean) => {
-  const name = getFileName(filePath);
+const getFileIconSvg = (fileName: string, isDirectory: boolean) => {
   if (isDirectory) {
-    const cleanName = name.replace(/\/$/, '');
-    return getFolderIcon(cleanName);
+    return getFolderIcon(fileName.replace(/\/$/, ''));
   }
-  const cleanName = name.replace(/:\d+(-\d+)?$/, '');
-  const extension = cleanName.indexOf('.') !== -1 ? cleanName.split('.').pop() : '';
-  return getFileIcon(extension, cleanName);
+  const cleanName = fileName.replace(/:\d+(-\d+)?$/, '');
+  const extension = cleanName.includes('.') ? cleanName.split('.').pop() : '';
+  return getFileIcon(extension ?? '', cleanName);
 };
 
 const ReadToolGroupBlock = ({ items }: ReadToolGroupBlockProps) => {
@@ -235,12 +111,10 @@ const ReadToolGroupBlock = ({ items }: ReadToolGroupBlockProps) => {
     ? MAX_VISIBLE_ITEMS * ITEM_HEIGHT
     : fileItems.length * ITEM_HEIGHT;
 
-  const handleFileClick = (filePath: string, isDirectory: boolean, e: React.MouseEvent) => {
+  const handleFileClick = (openPath: string, isDirectory: boolean, e: React.MouseEvent, lineStart?: number, lineEnd?: number) => {
     e.stopPropagation();
     if (!isDirectory) {
-      // Remove line number suffix for opening
-      const cleanPath = filePath.replace(/:\d+(-\d+)?$/, '');
-      openFile(cleanPath);
+      openFile(openPath, lineStart, lineEnd);
     }
   };
 
@@ -287,7 +161,7 @@ const ReadToolGroupBlock = ({ items }: ReadToolGroupBlockProps) => {
             <div
               key={index}
               className={`file-list-item ${!item.isDirectory ? 'clickable-file' : ''}`}
-              onClick={(e) => handleFileClick(item.filePath, item.isDirectory, e)}
+              onClick={(e) => handleFileClick(item.openPath, item.isDirectory, e, item.lineStart, item.lineEnd)}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -298,7 +172,7 @@ const ReadToolGroupBlock = ({ items }: ReadToolGroupBlockProps) => {
                 minHeight: `${ITEM_HEIGHT}px`,
                 flexShrink: 0,
               }}
-              title={item.filePath}
+              title={item.displayPath}
             >
               <span
                 style={{
@@ -309,7 +183,7 @@ const ReadToolGroupBlock = ({ items }: ReadToolGroupBlockProps) => {
                   height: '16px',
                   flexShrink: 0,
                 }}
-                dangerouslySetInnerHTML={{ __html: getFileIconSvg(item.filePath, item.isDirectory) }}
+                dangerouslySetInnerHTML={{ __html: getFileIconSvg(item.cleanFileName, item.isDirectory) }}
               />
               <span
                 style={{
@@ -322,7 +196,7 @@ const ReadToolGroupBlock = ({ items }: ReadToolGroupBlockProps) => {
                   minWidth: 0,
                 }}
               >
-                {item.cleanFileName}
+                {item.displayPath}
               </span>
               {item.lineInfo && (
                 <span

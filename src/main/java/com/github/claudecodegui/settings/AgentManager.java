@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.regex.Pattern;
@@ -43,7 +44,7 @@ public class AgentManager {
             return config;
         }
 
-        try (FileReader reader = new FileReader(agentFile)) {
+        try (FileReader reader = new FileReader(agentFile, StandardCharsets.UTF_8)) {
             JsonObject config = JsonParser.parseReader(reader).getAsJsonObject();
             // Ensure the agents node exists
             if (!config.has("agents")) {
@@ -65,7 +66,7 @@ public class AgentManager {
         pathManager.ensureConfigDirectory();
 
         Path agentPath = pathManager.getAgentFilePath();
-        try (FileWriter writer = new FileWriter(agentPath.toFile())) {
+        try (FileWriter writer = new FileWriter(agentPath.toFile(), StandardCharsets.UTF_8)) {
             gson.toJson(config, writer);
             LOG.info("[AgentManager] Successfully wrote agent.json");
         } catch (Exception e) {

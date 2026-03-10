@@ -775,7 +775,7 @@ public class ClaudeHistoryReader {
                             Path convFile = subDir.resolve("conversation.json");
                             if (Files.exists(convFile)) {
                                 try {
-                                    String content = new String(Files.readAllBytes(convFile));
+                                    String content = new String(Files.readAllBytes(convFile), java.nio.charset.StandardCharsets.UTF_8);
                                     Map<String, Object> convData = new HashMap<>();
                                     convData.put("id", subDir.getFileName().toString());
                                     convData.put("data", JsonParser.parseString(content));

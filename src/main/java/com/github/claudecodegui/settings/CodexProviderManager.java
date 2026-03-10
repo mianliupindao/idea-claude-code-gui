@@ -61,18 +61,44 @@ public class CodexProviderManager {
         JsonObject providers = codex.getAsJsonObject("providers");
         String currentId = codex.has("current") ? codex.get("current").getAsString() : null;
 
-        for (String key : providers.keySet()) {
-            JsonObject provider = providers.getAsJsonObject(key);
-            // Ensure id field exists
-            if (!provider.has("id")) {
-                provider.addProperty("id", key);
+        // Get provider order from config, or use default order (by key)
+        List<String> orderedIds = ProviderOrderHelper.getProviderOrder(codex, providers.keySet());
+
+        // Add providers in order
+        for (String id : orderedIds) {
+            if (providers.has(id)) {
+                JsonObject provider = providers.getAsJsonObject(id).deepCopy();
+                // Ensure id field exists
+                if (!provider.has("id")) {
+                    provider.addProperty("id", id);
+                }
+                // Add isActive flag
+                provider.addProperty("isActive", id.equals(currentId));
+                result.add(provider);
             }
-            // Add isActive flag
-            provider.addProperty("isActive", key.equals(currentId));
-            result.add(provider);
         }
 
         return result;
+    }
+
+    /**
+     * Save provider order.
+     */
+    public void saveProviderOrder(List<String> orderedIds) throws IOException {
+        JsonObject config = configReader.apply(null);
+
+        if (!config.has("codex")) {
+            JsonObject codex = new JsonObject();
+            codex.add("providers", new JsonObject());
+            codex.addProperty("current", "");
+            config.add("codex", codex);
+        }
+
+        JsonObject codex = config.getAsJsonObject("codex");
+        ProviderOrderHelper.setProviderOrder(codex, orderedIds);
+
+        configWriter.accept(config);
+        LOG.info("[CodexProviderManager] Saved provider order: " + orderedIds);
     }
 
     /**
@@ -284,6 +310,9 @@ public class CodexProviderManager {
                     LOG.info("[CodexProviderManager] No remaining providers");
                 }
             }
+
+            // Remove deleted provider from providerOrder to avoid stale IDs
+            ProviderOrderHelper.removeFromOrder(codex, id);
 
             // Write config
             configWriter.accept(config);

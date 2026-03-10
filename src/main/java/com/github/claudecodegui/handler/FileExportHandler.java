@@ -10,6 +10,7 @@ import java.awt.*;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -104,7 +105,7 @@ public class FileExportHandler extends BaseMessageHandler {
                         // Write the file (perform I/O on a background thread)
                         File finalFileToSave = fileToSave;
                         CompletableFuture.runAsync(() -> {
-                            try (FileWriter writer = new FileWriter(finalFileToSave)) {
+                            try (FileWriter writer = new FileWriter(finalFileToSave, StandardCharsets.UTF_8)) {
                                 writer.write(content);
                                 LOG.info("[FileExportHandler] ✅ 文件保存成功: " + finalFileToSave.getAbsolutePath());
 

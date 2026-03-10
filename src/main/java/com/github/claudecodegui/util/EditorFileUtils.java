@@ -1,6 +1,7 @@
 package com.github.claudecodegui.util;
 
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.util.Computable;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.diagnostic.Logger;
@@ -280,7 +281,7 @@ public class EditorFileUtils {
             return null;
         }
         try {
-            return ReadAction.compute(() -> {
+            return ApplicationManager.getApplication().runReadAction((Computable<String>) () -> {
                 VirtualFile[] files = FileEditorManager.getInstance(project).getSelectedFiles();
                 if (files.length == 0 || files[0] == null) {
                     return null;

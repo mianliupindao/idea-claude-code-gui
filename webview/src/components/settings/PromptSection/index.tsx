@@ -1,148 +1,260 @@
-import { useState, useRef, useEffect } from 'react';
+import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { PromptConfig } from '../../../types/prompt';
+import type { PromptScope } from '../../../types/prompt';
+import { usePromptManagement } from '../hooks/usePromptManagement';
+import { updateGlobalPromptsCache, updateProjectPromptsCache } from '../../ChatInputBox/providers';
+import PromptScopeSection from './PromptScopeSection';
+import PromptDialog from '../../PromptDialog';
+import ConfirmDialog from '../../ConfirmDialog';
+import PromptExportDialog from './PromptExportDialog';
+import PromptImportConfirmDialog from './PromptImportConfirmDialog';
 import styles from './style.module.less';
 
 interface PromptSectionProps {
-  prompts: PromptConfig[];
-  loading: boolean;
-  onAdd: () => void;
-  onEdit: (prompt: PromptConfig) => void;
-  onDelete: (prompt: PromptConfig) => void;
-  onExport: () => void;
-  onImport: () => void;
+  onSuccess?: (message: string) => void;
 }
 
 export default function PromptSection({
-  prompts,
-  loading,
-  onAdd,
-  onEdit,
-  onDelete,
-  onExport,
-  onImport,
+  onSuccess,
 }: PromptSectionProps) {
   const { t } = useTranslation();
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
 
+  // Use prompt management hook
+  const {
+    globalPrompts,
+    projectPrompts,
+    projectInfo,
+    promptsLoading,
+    promptDialog,
+    deletePromptConfirm,
+    importPreviewDialog,
+    exportDialog,
+    loadAllPrompts,
+    updateGlobalPrompts,
+    updateProjectPrompts,
+    updateProjectInfo,
+    handleAddPrompt,
+    handleEditPrompt,
+    handleClosePromptDialog,
+    handleDeletePrompt,
+    handleSavePrompt,
+    confirmDeletePrompt,
+    cancelDeletePrompt,
+    handlePromptOperationResult,
+    handleExportPrompts,
+    handleCloseExportDialog,
+    handleConfirmExport,
+    handleImportPromptsFile,
+    handlePromptImportPreviewResult,
+    handleCloseImportPreview,
+    handleSaveImportedPrompts,
+    handlePromptImportResult,
+    cleanupPromptsTimeout,
+  } = usePromptManagement({ onSuccess });
+
+  // Load project info and prompts on mount
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setOpenMenuId(null);
+    // Load project info first
+    if (window.sendToJava) {
+      window.sendToJava('get_project_info:{}');
+    }
+    // Then load prompts
+    loadAllPrompts();
+    return () => cleanupPromptsTimeout();
+  }, [loadAllPrompts, cleanupPromptsTimeout]);
+
+  // Setup window callbacks
+  useEffect(() => {
+    // Save original callbacks to restore on unmount
+    const originalUpdateGlobalPrompts = window.updateGlobalPrompts;
+    const originalUpdateProjectPrompts = window.updateProjectPrompts;
+    const originalUpdateProjectInfo = window.updateProjectInfo;
+    const originalPromptOperationResult = window.promptOperationResult;
+    const originalPromptImportPreviewResult = window.promptImportPreviewResult;
+    const originalPromptImportResult = window.promptImportResult;
+
+    // Chain our handlers with existing ones
+    window.updateGlobalPrompts = (json: string) => {
+      try {
+        const promptsList = JSON.parse(json);
+        updateGlobalPrompts(promptsList);
+
+        // ✅ Sync update promptProvider cache
+        const promptItems = promptsList.map((prompt: any) => ({
+          id: prompt.id,
+          name: prompt.name,
+          content: prompt.content,
+          scope: 'global' as PromptScope,
+        }));
+        updateGlobalPromptsCache(promptItems);
+      } catch (error) {
+        console.error('[PromptSection] Failed to parse global prompts:', error);
       }
+      // Call original handler if exists
+      originalUpdateGlobalPrompts?.(json);
     };
 
-    document.addEventListener('mousedown', handleClickOutside);
+    window.updateProjectPrompts = (json: string) => {
+      try {
+        const promptsList = JSON.parse(json);
+        updateProjectPrompts(promptsList);
+
+        // ✅ Sync update promptProvider cache
+        const promptItems = promptsList.map((prompt: any) => ({
+          id: prompt.id,
+          name: prompt.name,
+          content: prompt.content,
+          scope: 'project' as PromptScope,
+        }));
+        updateProjectPromptsCache(promptItems);
+      } catch (error) {
+        console.error('[PromptSection] Failed to parse project prompts:', error);
+      }
+      // Call original handler if exists
+      originalUpdateProjectPrompts?.(json);
+    };
+
+    window.updateProjectInfo = (json: string) => {
+      try {
+        const info = JSON.parse(json);
+        updateProjectInfo(info);
+      } catch (error) {
+        console.error('[PromptSection] Failed to parse project info:', error);
+      }
+      // Call original handler if exists
+      originalUpdateProjectInfo?.(json);
+    };
+
+    window.promptOperationResult = (json: string) => {
+      try {
+        const result = JSON.parse(json);
+        handlePromptOperationResult(result);
+      } catch (error) {
+        console.error('[PromptSection] Failed to parse prompt operation result:', error);
+      }
+      // Call original handler if exists
+      originalPromptOperationResult?.(json);
+    };
+
+    window.promptImportPreviewResult = (json: string) => {
+      try {
+        const previewData = JSON.parse(json);
+        handlePromptImportPreviewResult(previewData);
+      } catch (error) {
+        console.error('[PromptSection] Failed to parse prompt import preview result:', error);
+      }
+      // Call original handler if exists
+      originalPromptImportPreviewResult?.(json);
+    };
+
+    window.promptImportResult = (json: string) => {
+      try {
+        const result = JSON.parse(json);
+        handlePromptImportResult(result);
+      } catch (error) {
+        console.error('[PromptSection] Failed to parse prompt import result:', error);
+      }
+      // Call original handler if exists
+      originalPromptImportResult?.(json);
+    };
+
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
+      // Restore original callbacks instead of deleting them
+      // This ensures other components (like promptProvider) continue to receive updates
+      window.updateGlobalPrompts = originalUpdateGlobalPrompts;
+      window.updateProjectPrompts = originalUpdateProjectPrompts;
+      window.updateProjectInfo = originalUpdateProjectInfo;
+      window.promptOperationResult = originalPromptOperationResult;
+      window.promptImportPreviewResult = originalPromptImportPreviewResult;
+      window.promptImportResult = originalPromptImportResult;
     };
-  }, []);
+  }, [
+    updateGlobalPrompts,
+    updateProjectPrompts,
+    updateProjectInfo,
+    handlePromptOperationResult,
+    handlePromptImportPreviewResult,
+    handlePromptImportResult,
+  ]);
 
-  const handleMenuToggle = (promptId: string) => {
-    setOpenMenuId(openMenuId === promptId ? null : promptId);
-  };
-
-  const handleEditClick = (prompt: PromptConfig) => {
-    setOpenMenuId(null);
-    onEdit(prompt);
-  };
-
-  const handleDeleteClick = (prompt: PromptConfig) => {
-    setOpenMenuId(null);
-    onDelete(prompt);
+  // Get all prompts for export dialog (combining global and project based on export scope)
+  const getPromptsForExport = (scope: PromptScope) => {
+    return scope === 'global' ? globalPrompts : projectPrompts;
   };
 
   return (
-    <div className={styles.container}>
-      <div className={styles.header}>
-        <div className={styles.titleWrapper}>
-          <h3 className={styles.title}>{t('settings.prompt.title')}</h3>
+    <div className={styles.promptLibrary}>
+      <h3>{t('settings.prompt.title')}</h3>
+      <p className={styles.description}>{t('settings.prompt.description')}</p>
+
+      {/* Global Prompts Section */}
+      <PromptScopeSection
+        title={t('settings.prompt.global')}
+        scope="global"
+        prompts={globalPrompts}
+        loading={promptsLoading}
+        onAdd={() => handleAddPrompt('global')}
+        onEdit={(prompt) => handleEditPrompt(prompt, 'global')}
+        onDelete={(prompt) => handleDeletePrompt(prompt, 'global')}
+        onExport={() => handleExportPrompts('global')}
+        onImport={() => handleImportPromptsFile('global')}
+      />
+
+      {/* Project Prompts Section */}
+      {projectInfo?.available ? (
+        <PromptScopeSection
+          title={t('settings.prompt.projectScope', { projectName: projectInfo.name })}
+          scope="project"
+          prompts={projectPrompts}
+          loading={promptsLoading}
+          onAdd={() => handleAddPrompt('project')}
+          onEdit={(prompt) => handleEditPrompt(prompt, 'project')}
+          onDelete={(prompt) => handleDeletePrompt(prompt, 'project')}
+          onExport={() => handleExportPrompts('project')}
+          onImport={() => handleImportPromptsFile('project')}
+        />
+      ) : (
+        <div className={styles.noProject}>
+          <p>{t('settings.prompt.noProject')}</p>
         </div>
-        <div className={styles.headerActions}>
-          <button className={styles.exportButton} onClick={onExport}>
-            <span className="codicon codicon-export" />
-            {t('settings.prompt.export')}
-          </button>
-          <button className={styles.importButton} onClick={onImport}>
-            <span className="codicon codicon-cloud-download" />
-            {t('settings.prompt.import')}
-          </button>
-          <button className={styles.addButton} onClick={onAdd}>
-            <span className="codicon codicon-add" />
-            {t('settings.prompt.create')}
-          </button>
-        </div>
-      </div>
+      )}
 
-      <div className={styles.description}>
-        {t('settings.prompt.description')}
-      </div>
+      {/* Prompt add/edit dialog */}
+      <PromptDialog
+        isOpen={promptDialog.isOpen}
+        prompt={promptDialog.prompt}
+        onClose={handleClosePromptDialog}
+        onSave={handleSavePrompt}
+      />
 
-      <div className={styles.section}>
-        <h4 className={styles.sectionTitle}>{t('settings.prompt.customPrompts')}</h4>
+      {/* Prompt delete confirmation dialog */}
+      <ConfirmDialog
+        isOpen={deletePromptConfirm.isOpen}
+        title={t('settings.prompt.deleteConfirmTitle')}
+        message={t('settings.prompt.deleteConfirmMessage', { name: deletePromptConfirm.prompt?.name || '' })}
+        confirmText={t('common.delete')}
+        cancelText={t('common.cancel')}
+        onConfirm={confirmDeletePrompt}
+        onCancel={cancelDeletePrompt}
+      />
 
-        {loading ? (
-          <div className={styles.loadingState}>
-            <span className="codicon codicon-loading codicon-modifier-spin" />
-            <span>{t('settings.prompt.loading')}</span>
-          </div>
-        ) : prompts.length === 0 ? (
-          <div className={styles.emptyState}>
-            <span>{t('settings.prompt.noPrompts')}</span>
-            <button className={styles.createLink} onClick={onAdd}>
-              {t('settings.prompt.create')}
-            </button>
-          </div>
-        ) : (
-          <div className={styles.promptList}>
-            {prompts.map((prompt) => (
-              <div key={prompt.id} className={styles.promptCard}>
-                <div className={styles.promptIcon}>
-                  <span className="codicon codicon-bookmark" />
-                </div>
-                <div className={styles.promptInfo}>
-                  <div className={styles.promptName}>{prompt.name}</div>
-                  {prompt.content && (
-                    <div className={styles.promptContent} title={prompt.content}>
-                      {prompt.content.length > 80
-                        ? prompt.content.substring(0, 80) + '...'
-                        : prompt.content}
-                    </div>
-                  )}
-                </div>
-                <div className={styles.promptActions} ref={openMenuId === prompt.id ? menuRef : null}>
-                  <button
-                    className={styles.menuButton}
-                    onClick={() => handleMenuToggle(prompt.id)}
-                    title={t('settings.prompt.menu')}
-                  >
-                    <span className="codicon codicon-kebab-vertical" />
-                  </button>
-                  {openMenuId === prompt.id && (
-                    <div className={styles.dropdownMenu}>
-                      <button
-                        className={styles.menuItem}
-                        onClick={() => handleEditClick(prompt)}
-                      >
-                        <span className="codicon codicon-edit" />
-                        {t('common.edit')}
-                      </button>
-                      <button
-                        className={`${styles.menuItem} ${styles.danger}`}
-                        onClick={() => handleDeleteClick(prompt)}
-                      >
-                        <span className="codicon codicon-trash" />
-                        {t('common.delete')}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* Prompt export dialog */}
+      {exportDialog.isOpen && (
+        <PromptExportDialog
+          prompts={getPromptsForExport(exportDialog.scope)}
+          onConfirm={handleConfirmExport}
+          onCancel={handleCloseExportDialog}
+        />
+      )}
+
+      {/* Prompt import preview dialog */}
+      {importPreviewDialog.isOpen && importPreviewDialog.previewData && (
+        <PromptImportConfirmDialog
+          previewData={importPreviewDialog.previewData}
+          onConfirm={(selectedIds, strategy) => handleSaveImportedPrompts(selectedIds, strategy, importPreviewDialog.scope)}
+          onCancel={handleCloseImportPreview}
+        />
+      )}
     </div>
   );
 }

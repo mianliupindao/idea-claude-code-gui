@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -51,9 +52,9 @@ public final class SlashCommandRegistry {
     }
 
     /**
-     * Represents plugin-contributed skill directory info.
+     * Represents plugin-contributed skill or command directory info.
      */
-    public record PluginSkillPath(String pluginName, String path) {
+    public record PluginPath(String pluginName, String path, String type) {
     }
 
     /**
@@ -68,6 +69,7 @@ public final class SlashCommandRegistry {
     private static final Pattern SAFE_PLUGIN_ID = Pattern.compile("^[a-zA-Z0-9._@/\\-]+$");
     private static final int MAX_GLOB_PATTERN_LENGTH = 256;
     private static final Pattern DANGEROUS_GLOB = Pattern.compile("(\\*\\*/){5,}");
+    private static final int MAX_COMMAND_SCAN_DEPTH = 10;
 
     // Claude built-in commands (GUI-relevant only; CLI-only and frontend-local ones are excluded)
     public static final List<SlashCommand> CLAUDE_BUILTIN = List.of(
@@ -278,19 +280,19 @@ public final class SlashCommandRegistry {
     }
 
     /**
-     * Gets plugin skill paths from enabled Claude Code plugins.
+     * Gets plugin paths (skills and commands) from enabled Claude Code plugins.
      *
      * @param cwd current working directory
-     * @return plugin skill paths
+     * @return plugin paths with type information
      */
-    public static List<PluginSkillPath> getPluginSkillPaths(String cwd) {
-        return getPluginSkillPaths(cwd, resolveUserHome());
+    public static List<PluginPath> getPluginPaths(String cwd) {
+        return getPluginPaths(cwd, resolveUserHome());
     }
 
     /**
-     * Gets plugin skill paths from enabled Claude Code plugins with explicit home path.
+     * Gets plugin paths from enabled Claude Code plugins with explicit home path.
      */
-    static List<PluginSkillPath> getPluginSkillPaths(String cwd, String userHome) {
+    static List<PluginPath> getPluginPaths(String cwd, String userHome) {
         if (userHome == null || userHome.isEmpty()) {
             return List.of();
         }
@@ -308,8 +310,9 @@ public final class SlashCommandRegistry {
             return List.of();
         }
         Map<String, InstalledPlugin> installedPlugins = getInstalledPlugins(pluginsBase);
+        Map<String, String> knownMarketplaces = readKnownMarketplaces(userHome);
 
-        List<PluginSkillPath> result = new ArrayList<>();
+        List<PluginPath> result = new ArrayList<>();
         Set<String> seen = new HashSet<>();
 
         for (Map.Entry<String, Boolean> entry : enabledPlugins.entrySet()) {
@@ -325,7 +328,9 @@ public final class SlashCommandRegistry {
                 continue;
             }
 
-            String pluginName = pluginId.split("@", 2)[0];
+            String[] idParts = pluginId.split("@", 2);
+            String pluginName = idParts[0];
+            String marketplaceId = idParts.length > 1 ? idParts[1] : null;
             InstalledPlugin installed = installedPlugins.get(pluginId);
             Path pluginDir = installed != null && installed.installPath() != null
                     ? toNormalizedPath(installed.installPath())
@@ -333,62 +338,124 @@ public final class SlashCommandRegistry {
             if (pluginDir == null) {
                 pluginDir = pluginsBase.resolve(pluginId).toAbsolutePath().normalize();
             }
+
+            // Try plugin dir manifest first, then marketplace manifest as fallback
             Path manifestPath = resolvePluginManifestPath(pluginDir);
-
-            if (manifestPath == null || !Files.isRegularFile(manifestPath)) {
-                LOG.debug("Plugin manifest not found, skip: " + manifestPath);
-                continue;
+            if (manifestPath == null && marketplaceId != null) {
+                manifestPath = resolveMarketplaceManifestPath(
+                        pluginName, marketplaceId, knownMarketplaces);
             }
 
-            JsonObject manifest = readJsonObject(manifestPath);
-            if (manifest == null) {
-                LOG.warn("Failed to parse plugin manifest: " + manifestPath);
-                continue;
+            JsonObject manifest = null;
+            if (manifestPath != null && Files.isRegularFile(manifestPath)) {
+                manifest = readJsonObject(manifestPath);
             }
 
-            List<String> declaredPaths = new ArrayList<>();
-            JsonElement skillsPath = manifest.get("skillsPath");
-            if (skillsPath != null && skillsPath.isJsonPrimitive()) {
-                declaredPaths.add(skillsPath.getAsString());
-            }
-            JsonElement skillsPaths = manifest.get("skillsPaths");
-            if (skillsPaths != null && skillsPaths.isJsonArray()) {
-                for (JsonElement item : skillsPaths.getAsJsonArray()) {
-                    if (item != null && item.isJsonPrimitive()) {
-                        declaredPaths.add(item.getAsString());
-                    }
-                }
-            }
-            // Claude plugin packages commonly use implicit ./skills without explicit skillsPath.
-            if (declaredPaths.isEmpty()) {
-                declaredPaths.add("skills");
+            // Extract skills paths
+            List<String> skillsPaths = extractDeclaredPaths(manifest, "skills");
+            if (skillsPaths.isEmpty()) {
+                skillsPaths = List.of("skills");
             }
 
-            for (String declaredPath : declaredPaths) {
-                if (declaredPath == null || declaredPath.trim().isEmpty()) {
-                    continue;
-                }
+            // Extract commands paths
+            List<String> commandsPaths = extractDeclaredPaths(manifest, "commands");
+            if (commandsPaths.isEmpty()) {
+                commandsPaths = List.of("commands");
+            }
 
-                Path resolved = resolvePluginSkillsPath(pluginDir, declaredPath.trim());
-                if (resolved == null || !isPluginSkillPathSafe(resolved, pluginDir)) {
-                    LOG.warn("Rejected plugin skill path: " + declaredPath + " from plugin " + pluginId);
-                    continue;
-                }
-                if (!Files.isDirectory(resolved)) {
-                    LOG.debug("Plugin skill directory does not exist: " + resolved);
-                    continue;
-                }
+            // Resolve and add skills paths
+            addResolvedPluginPaths(result, seen, pluginDir, pluginName, pluginId,
+                    skillsPaths, "skills");
 
-                String key = pluginName + "::" + normalizePath(resolved.toString());
-                if (seen.add(key)) {
-                    result.add(new PluginSkillPath(pluginName, resolved.toString()));
-                    LOG.debug("Accepted plugin skill path: " + resolved + " (plugin=" + pluginId + ")");
+            // Resolve and add commands paths
+            addResolvedPluginPaths(result, seen, pluginDir, pluginName, pluginId,
+                    commandsPaths, "commands");
+        }
+
+        LOG.debug("Discovered plugin paths: " + result.size());
+        return result;
+    }
+
+    /**
+     * Extracts declared paths from a plugin manifest for a given type.
+     * Normalizes field name variants: type, typePath, typePaths.
+     */
+    private static List<String> extractDeclaredPaths(JsonObject manifest, String type) {
+        if (manifest == null) {
+            return List.of();
+        }
+
+        // Use LinkedHashSet to deduplicate while preserving insertion order
+        Set<String> paths = new LinkedHashSet<>();
+
+        // Check typePath (singular), e.g. skillsPath, commandsPath
+        JsonElement singlePath = manifest.get(type + "Path");
+        if (singlePath != null && singlePath.isJsonPrimitive()) {
+            paths.add(singlePath.getAsString());
+        }
+
+        // Check typePaths (plural array), e.g. skillsPaths, commandsPaths
+        JsonElement multiPaths = manifest.get(type + "Paths");
+        if (multiPaths != null && multiPaths.isJsonArray()) {
+            for (JsonElement item : multiPaths.getAsJsonArray()) {
+                if (item != null && item.isJsonPrimitive()) {
+                    paths.add(item.getAsString());
                 }
             }
         }
 
-        LOG.debug("Discovered plugin skill paths: " + result.size());
-        return result;
+        // Check bare type name (e.g. "skills", "commands") — marketplace manifest style
+        JsonElement bareField = manifest.get(type);
+        if (bareField != null) {
+            if (bareField.isJsonPrimitive()) {
+                paths.add(bareField.getAsString());
+            } else if (bareField.isJsonArray()) {
+                for (JsonElement item : bareField.getAsJsonArray()) {
+                    if (item != null && item.isJsonPrimitive()) {
+                        paths.add(item.getAsString());
+                    }
+                }
+            }
+        }
+
+        return new ArrayList<>(paths);
+    }
+
+    /**
+     * Resolves and adds plugin paths to the result list with deduplication.
+     */
+    private static void addResolvedPluginPaths(
+            List<PluginPath> result,
+            Set<String> seen,
+            Path pluginDir,
+            String pluginName,
+            String pluginId,
+            List<String> declaredPaths,
+            String type
+    ) {
+        for (String declaredPath : declaredPaths) {
+            if (declaredPath == null || declaredPath.trim().isEmpty()) {
+                continue;
+            }
+
+            Path resolved = resolvePluginSubPath(pluginDir, declaredPath.trim());
+            if (resolved == null || !isPluginPathSafe(resolved, pluginDir)) {
+                LOG.warn("Rejected plugin " + type + " path: "
+                        + declaredPath + " from plugin " + pluginId);
+                continue;
+            }
+            if (!Files.isDirectory(resolved)) {
+                LOG.debug("Plugin " + type + " directory does not exist: " + resolved);
+                continue;
+            }
+
+            String key = pluginName + "::" + type + "::" + normalizePath(resolved.toString());
+            if (seen.add(key)) {
+                result.add(new PluginPath(pluginName, resolved.toString(), type));
+                LOG.debug("Accepted plugin " + type + " path: "
+                        + resolved + " (plugin=" + pluginId + ")");
+            }
+        }
     }
 
     /**
@@ -488,6 +555,7 @@ public final class SlashCommandRegistry {
         List<SlashCommand> additionalSkillCommands = List.of();
         List<SlashCommand> managedSkillCommands = List.of();
         List<SlashCommand> pluginSkillCommands = List.of();
+        List<SlashCommand> pluginCmdCommands = List.of();
 
         if (isCodex) {
             // Codex slash commands come only from ~/.codex/prompts/ (namespaced as /prompts:<name>)
@@ -524,7 +592,9 @@ public final class SlashCommandRegistry {
             }
 
             managedSkillCommands = scanManagedSkills(getManagedDirectory(), currentFilePath);
-            pluginSkillCommands = scanPluginSkills(cwd, currentFilePath, userHome);
+            List<PluginPath> allPluginPaths = getPluginPaths(cwd, userHome);
+            pluginSkillCommands = scanPluginSkills(allPluginPaths, currentFilePath);
+            pluginCmdCommands = scanPluginCommands(allPluginPaths);
         }
 
         // Merge (preserves insertion order, later overrides earlier)
@@ -538,6 +608,7 @@ public final class SlashCommandRegistry {
                 managedSkillCommands,
                 globalCmdCommands,
                 globalSkillCommands,
+                pluginCmdCommands,
                 pluginSkillCommands
         );
     }
@@ -664,17 +735,20 @@ public final class SlashCommandRegistry {
     }
 
     /**
-     * Scans enabled plugins and returns plugin-prefixed slash commands.
+     * Scans plugin skill paths and returns plugin-prefixed skill slash commands.
      */
-    private static List<SlashCommand> scanPluginSkills(String cwd, String currentFilePath, String userHome) {
-        List<PluginSkillPath> pluginPaths = getPluginSkillPaths(cwd, userHome);
+    private static List<SlashCommand> scanPluginSkills(
+            List<PluginPath> pluginPaths, String currentFilePath) {
         if (pluginPaths.isEmpty()) {
             return List.of();
         }
 
         Map<String, SlashCommand> merged = new LinkedHashMap<>();
         Path currentFile = toNormalizedPath(currentFilePath);
-        for (PluginSkillPath pluginPath : pluginPaths) {
+        for (PluginPath pluginPath : pluginPaths) {
+            if (!"skills".equals(pluginPath.type())) {
+                continue;
+            }
             List<SlashCommand> commands = scanSkillsAsCommands(
                     pluginPath.path(),
                     "plugin",
@@ -683,6 +757,37 @@ public final class SlashCommandRegistry {
             );
             for (SlashCommand cmd : commands) {
                 merged.put(cmd.name(), cmd);
+            }
+        }
+
+        return new ArrayList<>(merged.values());
+    }
+
+    /**
+     * Scans plugin command paths and returns plugin-prefixed command slash commands.
+     */
+    private static List<SlashCommand> scanPluginCommands(List<PluginPath> pluginPaths) {
+        if (pluginPaths.isEmpty()) {
+            return List.of();
+        }
+
+        Map<String, SlashCommand> merged = new LinkedHashMap<>();
+        for (PluginPath pluginPath : pluginPaths) {
+            if (!"commands".equals(pluginPath.type())) {
+                continue;
+            }
+            List<SlashCommand> commands = scanCommandsAsCommands(
+                    pluginPath.path(),
+                    "plugin:" + pluginPath.pluginName()
+            );
+            for (SlashCommand cmd : commands) {
+                // Apply plugin namespace prefix: /baseName → /pluginName:baseName
+                String cmdName = cmd.name();
+                String baseName = cmdName.startsWith("/") ? cmdName.substring(1) : cmdName;
+                String prefixedName = "/" + pluginPath.pluginName() + ":" + baseName;
+                SlashCommand prefixed = new SlashCommand(
+                        prefixedName, cmd.description(), cmd.source());
+                merged.put(prefixed.name(), prefixed);
             }
         }
 
@@ -749,55 +854,89 @@ public final class SlashCommandRegistry {
     }
 
     /**
-     * Scans a commands directory for .md files and converts them to slash commands.
-     * Supports namespaced commands via subdirectories (e.g. opsx/explore.md → /opsx:explore).
+     * Scans a commands directory recursively for .md files and converts them to slash commands.
+     * Matches CLI behavior: subdirectory paths become colon-separated namespaces
+     * (e.g. opsx/explore.md -> /opsx:explore, a/b/c.md -> /a:b:c).
+     * Directories containing SKILL.md are treated as skill leaves and not recursed into.
      */
     private static List<SlashCommand> scanCommandsAsCommands(String dirPath, String source) {
         if (dirPath == null || dirPath.isEmpty()) {
             return List.of();
         }
-        File dir = new File(dirPath);
-        if (!dir.isDirectory()) {
-            return List.of();
-        }
-
-        File[] entries = dir.listFiles();
-        if (entries == null) {
+        Path baseDir = Paths.get(dirPath).toAbsolutePath().normalize();
+        if (!Files.isDirectory(baseDir)) {
             return List.of();
         }
 
         List<SlashCommand> commands = new ArrayList<>();
+        scanCommandsRecursive(baseDir.toFile(), baseDir, source, commands, 0);
+        return commands;
+    }
+
+    /**
+     * Recursively scans a directory for command .md files.
+     * If a directory contains SKILL.md, reads .md files there without further recursion.
+     * Otherwise recurses into subdirectories and reads .md files at current level.
+     * Depth is bounded by MAX_COMMAND_SCAN_DEPTH to prevent stack overflow from
+     * deeply nested or symlink-looped directory structures.
+     */
+    private static void scanCommandsRecursive(
+            File dir, Path baseDir, String source, List<SlashCommand> commands, int depth) {
+        if (depth > MAX_COMMAND_SCAN_DEPTH) {
+            LOG.warn("Max command scan depth exceeded, skipping: " + dir);
+            return;
+        }
+        File[] entries = dir.listFiles();
+        if (entries == null) {
+            return;
+        }
+
+        // CLI behavior: if directory contains SKILL.md, treat as skill leaf — read .md files only
+        boolean hasSkillMd = false;
+        for (File entry : entries) {
+            if (entry.isFile() && "skill.md".equalsIgnoreCase(entry.getName())) {
+                hasSkillMd = true;
+                break;
+            }
+        }
+
         for (File entry : entries) {
             if (entry.getName().startsWith(".")) {
                 continue;
             }
 
-            if (entry.isFile() && entry.getName().endsWith(".md")) {
-                // Top-level command: commit.md → /commit
-                SlashCommand cmd = parseCommandFile(entry, null, source);
+            if (entry.isFile() && entry.getName().toLowerCase().endsWith(".md")) {
+                String namespace = deriveCommandNamespace(entry, baseDir);
+                SlashCommand cmd = parseCommandFile(entry, namespace, source);
                 if (cmd != null) {
                     commands.add(cmd);
                 }
-            } else if (entry.isDirectory()) {
-                // Namespaced commands: opsx/explore.md → /opsx:explore
-                String namespace = entry.getName();
-                File[] subEntries = entry.listFiles();
-                if (subEntries == null) {
-                    continue;
-                }
-
-                for (File subEntry : subEntries) {
-                    if (subEntry.isFile() && subEntry.getName().endsWith(".md")
-                                && !subEntry.getName().startsWith(".")) {
-                        SlashCommand cmd = parseCommandFile(subEntry, namespace, source);
-                        if (cmd != null) {
-                            commands.add(cmd);
-                        }
-                    }
-                }
+            } else if (entry.isDirectory() && !hasSkillMd) {
+                scanCommandsRecursive(entry, baseDir, source, commands, depth + 1);
             }
         }
-        return commands;
+    }
+
+    /**
+     * Derives the colon-separated namespace from a command file's relative path to the base directory.
+     * For top-level files returns null; for nested files returns the path components joined by colons.
+     * Example: baseDir/opsx/explore.md -> "opsx", baseDir/a/b/c.md -> "a:b".
+     */
+    private static String deriveCommandNamespace(File mdFile, Path baseDir) {
+        Path parent = mdFile.getParentFile().toPath().toAbsolutePath().normalize();
+        Path base = baseDir.toAbsolutePath().normalize();
+        if (parent.equals(base)) {
+            return null;
+        }
+        Path relative = base.relativize(parent);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < relative.getNameCount(); i++) {
+            if (i > 0) {
+                sb.append(':');
+            }
+            sb.append(relative.getName(i));
+        }
+        return !sb.isEmpty() ? sb.toString() : null;
     }
 
     /**
@@ -1044,11 +1183,11 @@ public final class SlashCommandRegistry {
         return merged;
     }
 
-    private static Path resolvePluginSkillsPath(Path pluginDir, String declaredPath) {
+    private static Path resolvePluginSubPath(Path pluginDir, String declaredPath) {
         try {
             Path path = Paths.get(declaredPath);
             if (path.isAbsolute()) {
-                LOG.warn("Rejecting absolute plugin skill path: " + declaredPath);
+                LOG.warn("Rejecting absolute plugin path: " + declaredPath);
                 return null;
             }
             return pluginDir.resolve(path).normalize();
@@ -1057,24 +1196,24 @@ public final class SlashCommandRegistry {
         }
     }
 
-    private static boolean isPluginSkillPathSafe(Path skillPath, Path pluginDir) {
-        if (skillPath == null || pluginDir == null) {
+    private static boolean isPluginPathSafe(Path subPath, Path pluginDir) {
+        if (subPath == null || pluginDir == null) {
             return false;
         }
 
         try {
             // Use toRealPath() to resolve ALL symlinks atomically, preventing TOCTOU and symlink bypass
-            Path realSkillPath = skillPath.toRealPath();
+            Path realSubPath = subPath.toRealPath();
             Path realPluginDir = pluginDir.toRealPath();
 
-            if (!realSkillPath.startsWith(realPluginDir)) {
+            if (!realSubPath.startsWith(realPluginDir)) {
                 return false;
             }
 
-            return !realSkillPath.equals(realPluginDir);
+            return !realSubPath.equals(realPluginDir);
         } catch (IOException e) {
             // Path does not exist or cannot be resolved — reject
-            LOG.debug("Cannot resolve real path for plugin skill safety check: " + skillPath);
+            LOG.debug("Cannot resolve real path for plugin path safety check: " + subPath);
             return false;
         }
     }
@@ -1092,6 +1231,82 @@ public final class SlashCommandRegistry {
             return rootManifest;
         }
         return null;
+    }
+
+    /**
+     * Resolves a plugin manifest path from the marketplace directory as fallback.
+     */
+    private static Path resolveMarketplaceManifestPath(
+            String pluginName,
+            String marketplaceId,
+            Map<String, String> knownMarketplaces
+    ) {
+        if (marketplaceId == null || knownMarketplaces == null) {
+            return null;
+        }
+
+        // Defense-in-depth: reject plugin names that could traverse out of the plugins directory
+        if (pluginName == null || pluginName.contains("..")) {
+            return null;
+        }
+
+        String installLocation = knownMarketplaces.get(marketplaceId);
+        if (installLocation == null || installLocation.isEmpty()) {
+            return null;
+        }
+
+        try {
+            Path marketplaceDir = Paths.get(installLocation).toAbsolutePath().normalize();
+            Path pluginsDir = marketplaceDir.resolve("plugins");
+            Path pluginEntry = pluginsDir.resolve(pluginName).toAbsolutePath().normalize();
+            // Verify resolved path stays within the plugins directory
+            if (!pluginEntry.startsWith(pluginsDir)) {
+                LOG.warn("Plugin path escaped marketplace plugins dir: " + pluginEntry);
+                return null;
+            }
+            return resolvePluginManifestPath(pluginEntry);
+        } catch (Exception e) {
+            LOG.debug("Failed to resolve marketplace manifest for plugin: " + pluginName);
+            return null;
+        }
+    }
+
+    /**
+     * Reads known_marketplaces.json and returns marketplaceId to installLocation mapping.
+     */
+    private static Map<String, String> readKnownMarketplaces(String userHome) {
+        Map<String, String> result = new HashMap<>();
+        if (userHome == null || userHome.isEmpty()) {
+            return result;
+        }
+
+        Path knownPath;
+        try {
+            knownPath = Paths.get(userHome, ".claude", "plugins", "known_marketplaces.json");
+        } catch (Exception e) {
+            return result;
+        }
+
+        JsonObject root = readJsonObject(knownPath);
+        if (root == null) {
+            return result;
+        }
+
+        for (String marketplaceId : root.keySet()) {
+            JsonElement entry = root.get(marketplaceId);
+            if (entry == null || !entry.isJsonObject()) {
+                continue;
+            }
+            JsonElement locationElement = entry.getAsJsonObject().get("installLocation");
+            if (locationElement != null && locationElement.isJsonPrimitive()) {
+                String location = locationElement.getAsString();
+                if (location != null && !location.trim().isEmpty()) {
+                    result.put(marketplaceId, location.trim());
+                }
+            }
+        }
+
+        return result;
     }
 
     private static Map<String, InstalledPlugin> getInstalledPlugins(Path pluginsBase) {

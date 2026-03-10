@@ -74,16 +74,42 @@ public class ProviderManager {
 
         JsonObject providers = claude.getAsJsonObject("providers");
 
-        for (String key : providers.keySet()) {
-            JsonObject provider = providers.getAsJsonObject(key);
-            if (!provider.has("id")) {
-                provider.addProperty("id", key);
+        // Get provider order from config, or use default order (by key)
+        List<String> orderedIds = ProviderOrderHelper.getProviderOrder(claude, providers.keySet());
+
+        // Add providers in order
+        for (String id : orderedIds) {
+            if (providers.has(id)) {
+                JsonObject provider = providers.getAsJsonObject(id).deepCopy();
+                if (!provider.has("id")) {
+                    provider.addProperty("id", id);
+                }
+                provider.addProperty("isActive", id.equals(currentId));
+                result.add(provider);
             }
-            provider.addProperty("isActive", key.equals(currentId));
-            result.add(provider);
         }
 
         return result;
+    }
+
+    /**
+     * Save provider order.
+     */
+    public void saveProviderOrder(List<String> orderedIds) throws IOException {
+        JsonObject config = configReader.apply(null);
+
+        if (!config.has("claude")) {
+            JsonObject claude = new JsonObject();
+            claude.add("providers", new JsonObject());
+            claude.addProperty("current", "");
+            config.add("claude", claude);
+        }
+
+        JsonObject claude = config.getAsJsonObject("claude");
+        ProviderOrderHelper.setProviderOrder(claude, orderedIds);
+
+        configWriter.accept(config);
+        LOG.info("[ProviderManager] Saved provider order: " + orderedIds);
     }
 
     /**
@@ -299,6 +325,9 @@ public class ProviderManager {
                     LOG.info("[ProviderManager] No remaining providers");
                 }
             }
+
+            // Remove deleted provider from providerOrder to avoid stale IDs
+            ProviderOrderHelper.removeFromOrder(claude, id);
 
             // Write config
             configWriter.accept(config);

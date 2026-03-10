@@ -27,11 +27,10 @@ const MODEL_LABEL_KEYS: Record<string, string> = {
   'claude-opus-4-6[1m]': 'models.claude.opus46_1m.label',
   'claude-haiku-4-5': 'models.claude.haiku45.label',
   'gpt-5.3-codex': 'models.codex.gpt53codex.label',
-  'gpt-5.3': 'models.codex.gpt53.label',
+  'gpt-5.4': 'models.codex.gpt54.label',
   'gpt-5.2-codex': 'models.codex.gpt52codex.label',
   'gpt-5.1-codex-max': 'models.codex.gpt51codexMax.label',
   'gpt-5.1-codex-mini': 'models.codex.gpt51codexMini.label',
-  'gpt-5.2': 'models.codex.gpt52.label',
 };
 
 const MODEL_DESCRIPTION_KEYS: Record<string, string> = {
@@ -40,11 +39,10 @@ const MODEL_DESCRIPTION_KEYS: Record<string, string> = {
   'claude-opus-4-6[1m]': 'models.claude.opus46_1m.description',
   'claude-haiku-4-5': 'models.claude.haiku45.description',
   'gpt-5.3-codex': 'models.codex.gpt53codex.description',
-  'gpt-5.3': 'models.codex.gpt53.description',
+  'gpt-5.4': 'models.codex.gpt54.description',
   'gpt-5.2-codex': 'models.codex.gpt52codex.description',
   'gpt-5.1-codex-max': 'models.codex.gpt51codexMax.description',
   'gpt-5.1-codex-mini': 'models.codex.gpt51codexMini.description',
-  'gpt-5.2': 'models.codex.gpt52.description',
 };
 
 /**

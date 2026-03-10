@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -142,7 +143,7 @@ public class IgnoreRuleParser {
             return rules;
         }
 
-        try (BufferedReader reader = new BufferedReader(new FileReader(gitignoreFile))) {
+        try (BufferedReader reader = new BufferedReader(new FileReader(gitignoreFile, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 line = line.trim();

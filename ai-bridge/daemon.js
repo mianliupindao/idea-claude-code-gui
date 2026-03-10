@@ -32,7 +32,8 @@ import {
   sendMessageWithAttachmentsPersistent,
   preconnectPersistent,
   shutdownPersistentRuntimes,
-  abortCurrentTurn
+  abortCurrentTurn,
+  resetRuntimePersistent
 } from './services/claude/persistent-query-service.js';
 
 // =============================================================================
@@ -314,6 +315,8 @@ async function processRequest(request) {
       await sendMessageWithAttachmentsPersistent(stdinData);
     } else if (provider === 'claude' && command === 'preconnect') {
       await preconnectPersistent(stdinData);
+    } else if (provider === 'claude' && command === 'resetRuntime') {
+      await resetRuntimePersistent(stdinData);
     } else {
       // Dispatch to the existing handlers for non-send commands.
       switch (provider) {

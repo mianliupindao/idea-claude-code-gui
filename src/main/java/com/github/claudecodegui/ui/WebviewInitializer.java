@@ -177,7 +177,11 @@ public class WebviewInitializer {
         }
 
         // Prewarm daemon in background so first user message starts faster.
-        claudeSDKBridge.prewarmDaemonAsync(host.getProject().getBasePath());
+        // Bind the warm runtime to the current logical session epoch so future new-session
+        // transitions cannot accidentally reuse stale anonymous runtime ownership.
+        claudeSDKBridge.prewarmDaemonAsync(host.getProject().getBasePath(), host.getHandlerContext().getSession() != null
+                ? host.getHandlerContext().getSession().getRuntimeSessionEpoch()
+                : null);
 
         // Check JCEF support before creating browser
         if (!JBCefBrowserFactory.isJcefSupported()) {

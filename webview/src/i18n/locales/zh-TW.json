@@ -314,6 +314,7 @@
       "emptyProvider": "暫無供應商配置",
       "notConfigured": "未配置",
       "apiKey": "API Key",
+      "apiKeyHelper": "API Key 助手",
       "baseUrl": "Base URL",
       "provider": "供應商",
       "source": "來源",
@@ -353,6 +354,49 @@
       "localProviderName": "Local settings.json",
       "localProviderDescription": "Use configuration directly from ~/.claude/settings.json",
       "localProviderHelp": "When using local provider mode:\n• The plugin will not modify your ~/.claude/settings.json file\n• You need to manually manage your configurations\n• Make sure the file exists and contains valid JSON\n• Suitable for advanced users who prefer manual control",
+      "subscriptionTutorial": {
+        "entry": "訂閱制帳號教學",
+        "dialogTitle": "如何使用訂閱制帳號",
+        "tabAriaLabel": "訂閱制帳號教學標籤",
+        "tabs": {
+          "claude": "Claude訂閱制",
+          "codex": "Codex訂閱制"
+        },
+        "code": {
+          "copy": "複製程式碼",
+          "copied": "已複製"
+        },
+        "providers": {
+          "claude": {
+            "title": "Claude Code 訂閱制帳號使用方式",
+            "item1": "首先在終端 Claude Code CLI 登入成功 Claude Code 訂閱制帳號，然後可以正常在終端提問",
+            "item2": "確保 ~/.claude/settings.json 檔案和 .env 檔案內容為空",
+            "item3": "重啟 IDEA，就可以正常提問了",
+            "emptyConfigCodeLabel": "~/.claude/settings.json",
+            "emptyConfigCode": "{\n  \"env\": {\n  }\n}",
+            "noteTitle": "特殊情況備註：",
+            "note1": "如果已經進行上述操作，但是本外掛還是無法回覆，可以將 ~/.claude/settings.json .env 內容改為：",
+            "proxyConfigCodeLabel": "~/.claude/settings.json",
+            "proxyConfigCode": "{\n  \"env\": {\n    \"HTTP_PROXY\": \"http://127.0.0.1:7897\",\n    \"HTTPS_PROXY\": \"http://127.0.0.1:7897\"\n  }\n}",
+            "issuePrefix": "如果還是不行，可以去GitHub留言排查：",
+            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+          },
+          "codex": {
+            "title": "Codex 訂閱制帳號使用方式",
+            "item1": "在終端 Codex CLI 執行 codex login 登入成功之後，可以正常在終端提問",
+            "item2": "重啟 IDEA",
+            "item3": "即可正常對話",
+            "emptyConfigCodeLabel": "",
+            "emptyConfigCode": "",
+            "noteTitle": "",
+            "note1": "",
+            "proxyConfigCodeLabel": "",
+            "proxyConfigCode": "",
+            "issuePrefix": "如果還是不行，可以去GitHub留言排查：",
+            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+          }
+        }
+      },
       "importDialog": {
         "title": "匯入 cc-switch 配置",
         "summary": "共識別到 {{total}} 個配置，其中",
@@ -844,7 +888,7 @@
     "runCommand": "運行命令",
     "contextEngine": "上下文引擎",
     "task": "任務",
-    "promptLabel": "提示詞 (Prompt)",
+    "promptLabel": "提示詞",
     "readFile": "讀取文件",
     "editFile": "編輯文件",
     "writeFile": "寫入文件",
@@ -879,8 +923,7 @@
     "bashGroupBatchExecution": "Batch Execution",
     "bashGroupCompleted": "completed",
     "bashGroupAllCompleted": "All Completed",
-    "bashGroupFailed": "failed",
-    "promptLabel": "提示詞"
+    "bashGroupFailed": "failed"
   },
   "todo": {
     "inProgress": "進行中 {{completed}}/{{total}} 個任務",
@@ -1082,9 +1125,9 @@
         "label": "gpt-5.3-codex",
         "description": "最新前沿智慧編程模型，能力全面增強"
       },
-      "gpt53": {
-        "label": "gpt-5.3",
-        "description": "最新前沿模型，性能顯著提升"
+      "gpt54": {
+        "label": "gpt-5.4",
+        "description": "最新前沿模型，能力進一步增強"
       },
       "gpt52codex": {
         "label": "gpt-5.2-codex",
@@ -1097,10 +1140,6 @@
       "gpt51codexMini": {
         "label": "gpt-5.1-codex-mini",
         "description": "針對Codex優化。更便宜、更快，但性能較差"
-      },
-      "gpt52": {
-        "label": "gpt-5.2",
-        "description": "最新前沿模型，知識儲備全面提升"
       }
     }
   },
@@ -1139,8 +1178,8 @@
     },
     "acceptEdits": {
       "label": "Auto Edit",
-      "tooltip": "Codex approval_policy=auto-edit – automatically applies file patches, still asks before shell commands.",
-      "description": "Auto-create and edit files via apply_patch while keeping command approvals."
+      "tooltip": "Codex approval_policy=on-request – asks for approval when needed",
+      "description": "Balanced option. Allows normal editing flow while still requiring approvals when needed."
     },
     "bypassPermissions": {
       "label": "Full Auto",

@@ -2,89 +2,12 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ToolInput } from '../../types';
 import { openFile } from '../../utils/bridge';
-import { getFileName } from '../../utils/helpers';
 import { getFileIcon, getFolderIcon } from '../../utils/fileIcons';
+import { getToolLineInfo, resolveToolTarget } from '../../utils/toolPresentation';
 
 interface ReadToolBlockProps {
   input?: ToolInput;
 }
-
-/**
- * Extract file/directory path from command string (for Codex commands)
- */
-const extractFilePathFromCommand = (command: string | undefined, workdir?: string): string | undefined => {
-  if (!command || typeof command !== 'string') return undefined;
-
-  let trimmed = command.trim();
-
-  // Extract actual command from shell wrapper (/bin/zsh -lc '...' or /bin/bash -c '...')
-  const shellWrapperMatch = trimmed.match(/^\/bin\/(zsh|bash)\s+(?:-lc|-c)\s+['"](.+)['"]$/);
-  if (shellWrapperMatch) {
-    trimmed = shellWrapperMatch[2];
-  }
-
-  // Remove 'cd dir &&' prefix if present
-  const cdPrefixMatch = trimmed.match(/^cd\s+\S+\s+&&\s+(.+)$/);
-  if (cdPrefixMatch) {
-    trimmed = cdPrefixMatch[1].trim();
-  }
-
-  // Match pwd command - returns current directory from workdir
-  if (/^pwd\s*$/.test(trimmed)) {
-    return workdir ? workdir + '/' : undefined;
-  }
-
-  // Match ls command (with or without flags)
-  const lsMatch = trimmed.match(/^ls\s+(?:-[a-zA-Z]+\s+)?(.+)$/);
-  if (lsMatch) {
-    const path = lsMatch[1].trim().replace(/^["']|["']$/g, '');
-    return path.endsWith('/') ? path : path + '/';
-  }
-
-  // Match ls without path (current directory)
-  if (/^ls(?:\s+-[a-zA-Z]+)*\s*$/.test(trimmed)) {
-    return workdir ? workdir + '/' : undefined;
-  }
-
-  // Match tree command
-  if (/^tree\b/.test(trimmed)) {
-    const treeMatch = trimmed.match(/^tree\s+(.+)$/);
-    if (treeMatch) {
-      const path = treeMatch[1].trim().replace(/^["']|["']$/g, '');
-      return path.endsWith('/') ? path : path + '/';
-    }
-    return workdir ? workdir + '/' : undefined;
-  }
-
-  // Match sed -n command (e.g., sed -n '700,780p' file.txt)
-  const sedMatch = trimmed.match(/^sed\s+-n\s+['"]?(\d+)(?:,(\d+))?p['"]?\s+(.+)$/);
-  if (sedMatch) {
-    const startLine = sedMatch[1];
-    const endLine = sedMatch[2];
-    const path = sedMatch[3].trim().replace(/^["']|["']$/g, '');
-    if (endLine) {
-      return `${path}:${startLine}-${endLine}`;
-    } else {
-      return `${path}:${startLine}`;
-    }
-  }
-
-  // Match cat command
-  const catMatch = trimmed.match(/^cat\s+(.+)$/);
-  if (catMatch) {
-    const path = catMatch[1].trim();
-    return path.replace(/^["']|["']$/g, '');
-  }
-
-  // Match head/tail commands
-  const headTailMatch = trimmed.match(/^(head|tail)\s+(?:.*\s)?([^\s-][^\s]*)$/);
-  if (headTailMatch) {
-    const path = headTailMatch[2].trim();
-    return path.replace(/^["']|["']$/g, '');
-  }
-
-  return undefined;
-};
 
 const ReadToolBlock = ({ input }: ReadToolBlockProps) => {
   const [expanded, setExpanded] = useState(false);
@@ -94,70 +17,27 @@ const ReadToolBlock = ({ input }: ReadToolBlockProps) => {
     return null;
   }
 
-  // Try standard file path fields first (ensure they are strings, not objects)
-  let filePath =
-    (typeof input.file_path === 'string' ? input.file_path : undefined) ??
-    (typeof input.target_file === 'string' ? input.target_file : undefined) ??
-    (typeof input.path === 'string' ? input.path : undefined);
-
-  // If not found, try extracting from Codex command
-  if (!filePath && typeof input.command === 'string') {
-    const workdir = typeof input.workdir === 'string' ? input.workdir : undefined;
-    filePath = extractFilePathFromCommand(input.command, workdir);
-  }
-
-  // Remove line number suffix for display
-  const cleanFileName = getFileName(filePath)?.replace(/:\d+(-\d+)?$/, '') || '';
-  const fileName = getFileName(filePath);
-
-  // Extract line info from either standard fields or from file path suffix
-  let lineInfo = '';
-
-  // First try standard offset/limit fields
-  if (typeof input.offset === 'number' && typeof input.limit === 'number') {
-    const startLine = Number(input.offset) + 1;
-    const endLine = Number(input.offset) + Number(input.limit);
-    lineInfo = t('tools.lineRange', { start: startLine, end: endLine });
-  }
-  // If not found, try extracting from file path suffix (e.g., "file.txt:300-370")
-  else if (filePath && /:\d+(-\d+)?$/.test(filePath)) {
-    const match = filePath.match(/:(\d+)(?:-(\d+))?$/);
-    if (match) {
-      const startLine = match[1];
-      const endLine = match[2];
-      if (endLine) {
-        lineInfo = t('tools.lineRange', { start: startLine, end: endLine });
-      } else {
-        lineInfo = t('tools.lineSingle', { line: startLine });
-      }
-    }
-  }
-
-  // Check if it's a directory (ends with / or is . or ..)
-  const isDirectory = filePath === '.' || filePath === '..' || filePath?.endsWith('/');
+  const target = resolveToolTarget(input, 'read');
+  const filePath = target?.rawPath;
+  const lineInfo = getToolLineInfo(input, target);
+  const isDirectory = target?.isDirectory ?? false;
   const iconClass = isDirectory ? 'codicon-folder' : 'codicon-file-code';
   const actionText = isDirectory ? t('permission.tools.readDirectory') : t('permission.tools.Read');
 
   const handleFileClick = (e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent bubbling to avoid triggering expand/collapse
-    if (filePath && !isDirectory) {
-      openFile(filePath);
+    if (target?.isFile) {
+      openFile(target.openPath, lineInfo.start, lineInfo.end);
     }
   };
 
-  const getFileIconSvg = (path?: string) => {
-    if (!path) return '';
-    const name = getFileName(path);
-
+  const getFileIconSvg = () => {
+    if (!target) return '';
     if (isDirectory) {
-      // Use folder icon for directories
-      return getFolderIcon(cleanFileName);
-    } else {
-      // Remove line number suffix if present
-      const cleanName = name.replace(/:\d+(-\d+)?$/, '');
-      const extension = cleanName.indexOf('.') !== -1 ? cleanName.split('.').pop() : '';
-      return getFileIcon(extension, cleanName);
+      return getFolderIcon(target.cleanFileName);
     }
+    const extension = target.cleanFileName.includes('.') ? target.cleanFileName.split('.').pop() : '';
+    return getFileIcon(extension ?? '', target.cleanFileName);
   };
 
   // Get all input parameters for the expanded view, excluding Codex-specific fields
@@ -193,14 +73,16 @@ const ReadToolBlock = ({ input }: ReadToolBlockProps) => {
           >
             <span
               style={{ marginRight: '4px', display: 'flex', alignItems: 'center', width: '16px', height: '16px' }}
-              dangerouslySetInnerHTML={{ __html: getFileIconSvg(filePath) }}
+              dangerouslySetInnerHTML={{ __html: getFileIconSvg() }}
             />
-            {cleanFileName || fileName || filePath}
+            {target?.displayPath || filePath}
           </span>
 
-          {lineInfo && (
+          {lineInfo.start && (
             <span className="tool-title-summary" style={{ marginLeft: '8px', fontSize: '12px' }}>
-              {lineInfo}
+              {lineInfo.end && lineInfo.end !== lineInfo.start
+                ? t('tools.lineRange', { start: lineInfo.start, end: lineInfo.end })
+                : t('tools.lineSingle', { line: lineInfo.start })}
             </span>
           )}
         </div>
@@ -249,4 +131,3 @@ const ReadToolBlock = ({ input }: ReadToolBlockProps) => {
 };
 
 export default ReadToolBlock;
-

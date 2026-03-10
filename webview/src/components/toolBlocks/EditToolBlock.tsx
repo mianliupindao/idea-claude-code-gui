@@ -3,8 +3,8 @@ import { useTranslation } from 'react-i18next';
 import type { ToolInput, ToolResultBlock } from '../../types';
 import { useIsToolDenied } from '../../hooks/useIsToolDenied';
 import { openFile, showDiff, refreshFile } from '../../utils/bridge';
-import { getFileName } from '../../utils/helpers';
 import { getFileIcon } from '../../utils/fileIcons';
+import { getToolLineInfo, resolveToolTarget } from '../../utils/toolPresentation';
 import GenericToolBlock from './GenericToolBlock';
 
 interface EditToolBlockProps {
@@ -106,12 +106,14 @@ const EditToolBlock = ({ name, input, result, toolId }: EditToolBlockProps) => {
   // If denied, show as error state
   const isError = isDenied || (isCompleted && result?.is_error === true);
 
-  const filePath =
-    (typeof input?.file_path === 'string' ? input.file_path : undefined) ??
-    (typeof input?.filePath === 'string' ? input.filePath : undefined) ??
-    (typeof input?.path === 'string' ? input.path : undefined) ??
-    (typeof input?.target_file === 'string' ? input.target_file : undefined) ??
-    (typeof input?.targetFile === 'string' ? input.targetFile : undefined);
+  const target = input ? resolveToolTarget({
+    ...input,
+    file_path: (typeof input.file_path === 'string' ? input.file_path : undefined) ??
+      (typeof input.filePath === 'string' ? input.filePath : undefined),
+    target_file: (typeof input.target_file === 'string' ? input.target_file : undefined) ??
+      (typeof input.targetFile === 'string' ? input.targetFile : undefined),
+  }, name) : undefined;
+  const filePath = target?.openPath;
 
   const oldString =
     (typeof input?.old_string === 'string' ? input.old_string : undefined) ??
@@ -145,17 +147,19 @@ const EditToolBlock = ({ name, input, result, toolId }: EditToolBlockProps) => {
     return <GenericToolBlock name={name} input={input} result={result} toolId={toolId} />;
   }
 
+  const lineInfo = input && target ? getToolLineInfo(input, target) : {};
+
   const handleFileClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (filePath) {
-      openFile(filePath);
+      openFile(filePath, lineInfo.start, lineInfo.end);
     }
   };
 
   const handleShowDiff = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (filePath) {
-      showDiff(filePath, oldString, newString, t('tools.editPrefix', { fileName: getFileName(filePath) }));
+      showDiff(filePath, oldString, newString, t('tools.editPrefix', { fileName: target?.cleanFileName ?? filePath }));
     }
   };
 
@@ -167,11 +171,10 @@ const EditToolBlock = ({ name, input, result, toolId }: EditToolBlockProps) => {
     }
   };
 
-  const getFileIconSvg = (path?: string) => {
-    if (!path) return '';
-    const name = getFileName(path);
-    const extension = name.indexOf('.') !== -1 ? name.split('.').pop() : '';
-    return getFileIcon(extension, name);
+  const getFileIconSvg = () => {
+    if (!target) return '';
+    const extension = target.cleanFileName.includes('.') ? target.cleanFileName.split('.').pop() : '';
+    return getFileIcon(extension ?? '', target.cleanFileName);
   };
 
   return (
@@ -257,15 +260,22 @@ const EditToolBlock = ({ name, input, result, toolId }: EditToolBlockProps) => {
             <span
               className="tool-title-summary clickable-file"
               onClick={handleFileClick}
-              title={t('tools.clickToOpen', { filePath })}
+              title={t('tools.clickToOpen', { filePath: target?.displayPath ?? filePath })}
               style={{ display: 'flex', alignItems: 'center' }}
             >
-              <span 
-                style={{ marginRight: '4px', display: 'flex', alignItems: 'center', width: '16px', height: '16px' }} 
-                dangerouslySetInnerHTML={{ __html: getFileIconSvg(filePath) }} 
+              <span
+                style={{ marginRight: '4px', display: 'flex', alignItems: 'center', width: '16px', height: '16px' }}
+                dangerouslySetInnerHTML={{ __html: getFileIconSvg() }}
               />
-              {getFileName(filePath) || filePath}
+              {target?.displayPath || filePath}
             </span>
+            {lineInfo.start && (
+              <span className="tool-title-summary" style={{ marginLeft: '8px', fontSize: '12px' }}>
+                {lineInfo.end && lineInfo.end !== lineInfo.start
+                  ? t('tools.lineRange', { start: lineInfo.start, end: lineInfo.end })
+                  : t('tools.lineSingle', { line: lineInfo.start })}
+              </span>
+            )}
             
             {(diff.additions > 0 || diff.deletions > 0) && (
               <span

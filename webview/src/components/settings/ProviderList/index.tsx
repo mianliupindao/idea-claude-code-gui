@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ProviderConfig } from '../../../types/provider';
 import { sendToJava } from '../../../utils/bridge';
+import { useDragSort } from '../hooks/useDragSort';
 import ImportConfirmDialog from './ImportConfirmDialog';
 import styles from './style.module.less';
 
@@ -34,6 +35,25 @@ export default function ProviderList({
   const [isImporting, setIsImporting] = useState(false);
   const importMenuRef = useRef<HTMLDivElement>(null);
 
+  const onSort = useCallback((orderedIds: string[]) => {
+    sendToJava('sort_providers', { orderedIds });
+  }, []);
+
+  const {
+    localItems: localProviders,
+    draggedId: draggedProviderId,
+    dragOverId: dragOverProviderId,
+    handleDragStart,
+    handleDragOver,
+    handleDragLeave,
+    handleDrop,
+    handleDragEnd,
+  } = useDragSort({
+    items: providers,
+    onSort,
+    pinnedIds: [LOCAL_PROVIDER_ID],
+  });
+
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (importMenuRef.current && !importMenuRef.current.contains(event.target as Node)) {
@@ -43,7 +63,6 @@ export default function ProviderList({
 
     // Register global callback functions for Java invocation
     (window as any).import_preview_result = (dataOrStr: any) => {
-        console.log('[Frontend] Received import_preview_result:', dataOrStr);
         let data = dataOrStr;
         if (typeof data === 'string') {
             try {
@@ -57,7 +76,6 @@ export default function ProviderList({
     };
 
     (window as any).backend_notification = (...args: any[]) => {
-        console.log('[Frontend] Received backend_notification args:', args);
         let data: any = {};
         
         // Support multi-argument invocation (type, title, message) to avoid JSON parsing issues
@@ -342,7 +360,7 @@ export default function ProviderList({
         <>
           <div
             key={LOCAL_PROVIDER_ID}
-            className={`${styles.card} ${providers.some(p => p.id === LOCAL_PROVIDER_ID && p.isActive) ? styles.active : ''} ${styles.localProviderCard}`}
+            className={`${styles.card} ${localProviders.some(p => p.id === LOCAL_PROVIDER_ID && p.isActive) ? styles.active : ''} ${styles.localProviderCard}`}
           >
             <div className={styles.cardInfo}>
               <div className={styles.name}>
@@ -355,7 +373,7 @@ export default function ProviderList({
             </div>
 
             <div className={styles.cardActions}>
-              {providers.some(p => p.id === LOCAL_PROVIDER_ID && p.isActive) ? (
+              {localProviders.some(p => p.id === LOCAL_PROVIDER_ID && p.isActive) ? (
                 <div className={styles.activeBadge}>
                   <span className="codicon codicon-check" />
                   {t('settings.provider.inUse')}
@@ -373,13 +391,27 @@ export default function ProviderList({
           </div>
 
           {(() => {
-            const regularProviders = providers.filter(p => p.id !== LOCAL_PROVIDER_ID);
+            const regularProviders = localProviders.filter(p => p.id !== LOCAL_PROVIDER_ID);
             return regularProviders.length > 0 ? (
               regularProviders.map((provider) => (
-            <div 
-              key={provider.id} 
-              className={`${styles.card} ${provider.isActive ? styles.active : ''}`}
+            <div
+              key={provider.id}
+              className={[
+                styles.card,
+                provider.isActive && styles.active,
+                draggedProviderId === provider.id && styles.dragging,
+                dragOverProviderId === provider.id && styles.dragOver,
+              ].filter(Boolean).join(' ')}
+              draggable={true}
+              onDragStart={(e) => handleDragStart(e, provider.id)}
+              onDragOver={(e) => handleDragOver(e, provider.id)}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => handleDrop(e, provider.id)}
+              onDragEnd={handleDragEnd}
             >
+              <div className={styles.dragHandle} title={t('settings.provider.dragToSort')}>
+                <span className="codicon codicon-gripper" />
+              </div>
               <div className={styles.cardInfo}>
                 <div className={styles.name}>
                   {provider.name}
@@ -453,7 +485,7 @@ export default function ProviderList({
           })()}
 
           {(() => {
-            const regularProviders = providers.filter(p => p.id !== LOCAL_PROVIDER_ID);
+            const regularProviders = localProviders.filter(p => p.id !== LOCAL_PROVIDER_ID);
             return regularProviders.length === 0 && emptyState ? (
               <div className={styles.emptyState}>
                 {emptyState}

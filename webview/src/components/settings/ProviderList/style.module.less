@@ -1,3 +1,5 @@
+@import '../shared/drag-sort.less';
+
 .container {
   display: flex;
   flex-direction: column;
@@ -489,12 +491,19 @@
     border-color: #0078d4;
     box-shadow: 0 0 0 1px rgba(0, 120, 212, 0.1);
   }
+
+  .drag-sort-card();
+}
+
+.dragHandle {
+  .drag-handle();
 }
 
 .cardInfo {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1;
 
   .name {
     font-size: 14px;

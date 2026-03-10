@@ -51,7 +51,6 @@ import {
   agentToDropdownItem,
   promptProvider,
   promptToDropdownItem,
-  preloadSlashCommands,
   dollarCommandProvider,
   dollarCommandToDropdownItem,
   type AgentItem,
@@ -783,12 +782,6 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       focusInput,
     });
 
-    // Preload slash commands on mount to improve perceived performance
-    // Load command data before user types "/" so it's immediately available
-    useEffect(() => {
-      preloadSlashCommands();
-    }, []);
-
     useSpaceKeyListener({ editableRef, onKeyDown: handleKeyDownForTagRendering });
 
     const {
@@ -801,6 +794,12 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       containerRef,
       editableWrapperRef,
     });
+
+    const handleCtxMenuCut = useCallback(() => {
+      if (!editableRef.current) return;
+      cutSelection(ctxMenu.savedRange, ctxMenu.selectedText, editableRef.current, ctxMenu.targetFileTag);
+      handleInput();
+    }, [ctxMenu.savedRange, ctxMenu.selectedText, ctxMenu.targetFileTag, handleInput]);
 
     return (
       <div
@@ -907,7 +906,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
               onClose={ctxMenu.close}
               items={[
                 { label: t('contextMenu.copy', 'Copy'), action: () => copySelection(ctxMenu.savedRange, ctxMenu.selectedText), disabled: !ctxMenu.hasSelection },
-                { label: t('contextMenu.cut', 'Cut'), action: () => { if (editableRef.current) { cutSelection(ctxMenu.savedRange, ctxMenu.selectedText, editableRef.current); handleInput(); } }, disabled: !ctxMenu.hasSelection },
+                { label: t('contextMenu.cut', 'Cut'), action: handleCtxMenuCut, disabled: !ctxMenu.hasSelection },
                 { label: t('contextMenu.paste', 'Paste'), action: () => { if (editableRef.current) { pasteAtCursor(ctxMenu.savedRange, editableRef.current, handleInput); } } },
                 { separator: true },
                 { label: t('contextMenu.newline', 'Insert Newline'), action: () => { if (editableRef.current) { insertNewline(ctxMenu.savedRange, editableRef.current); handleInput(); } } },

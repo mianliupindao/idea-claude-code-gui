@@ -40,6 +40,7 @@ public class EnvironmentConfigurator {
     /**
      * Updates the process environment variables, ensuring PATH includes the Node.js directory.
      * Supports both Windows (Path) and Unix (PATH) naming conventions.
+     * The configured Node.js directory is prepended to PATH with highest priority.
      */
     public void updateProcessEnvironment(ProcessBuilder pb, String nodeExecutable) {
         Map<String, String> env = pb.environment();
@@ -53,19 +54,31 @@ public class EnvironmentConfigurator {
             path = "";
         }
 
-        StringBuilder newPath = new StringBuilder(path);
+        StringBuilder newPath = new StringBuilder();
         String separator = File.pathSeparator;
 
-        // 1. Add the directory containing Node.js
+        // 1. Prepend the directory containing Node.js with highest priority
+        //    Remove it from existing PATH first to avoid duplicates
         if (nodeExecutable != null && !nodeExecutable.equals("node")) {
             File nodeFile = new File(nodeExecutable);
             String nodeDir = nodeFile.getParent();
-            if (nodeDir != null && !pathContains(path, nodeDir)) {
-                newPath.append(separator).append(nodeDir);
+            if (nodeDir != null) {
+                // Remove existing nodeDir from PATH to avoid duplicates
+                String cleanedPath = removePathEntry(path, nodeDir);
+                // Prepend nodeDir at the beginning for highest priority
+                newPath.append(nodeDir);
+                if (!cleanedPath.isEmpty()) {
+                    newPath.append(separator).append(cleanedPath);
+                }
+            } else {
+                newPath.append(path);
             }
+        } else {
+            newPath.append(path);
         }
 
-        // 2. Add common paths based on the platform
+        // 2. Add common paths based on the platform (append to the end)
+        String currentPath = newPath.toString();
         if (PlatformUtils.isWindows()) {
             // Common Windows paths
             String[] windowsPaths = {
@@ -74,7 +87,7 @@ public class EnvironmentConfigurator {
                     System.getenv("LOCALAPPDATA") + "\\Programs\\nodejs"
             };
             for (String p : windowsPaths) {
-                if (p != null && !p.contains("null") && !pathContains(path, p)) {
+                if (!p.contains("null") && !pathContains(currentPath, p)) {
                     newPath.append(separator).append(p);
                 }
             }
@@ -95,7 +108,7 @@ public class EnvironmentConfigurator {
                     userHome + "/.cargo/bin",
             };
             for (String p : unixPaths) {
-                if (!pathContains(path, p)) {
+                if (!pathContains(currentPath, p)) {
                     newPath.append(separator).append(p);
                 }
             }
@@ -148,11 +161,11 @@ public class EnvironmentConfigurator {
         }
         String permissionDir = getPermissionDirectory();
         if (permissionDir != null) {
-            env.putIfAbsent(CLAUDE_PERMISSION_ENV, permissionDir);
+            env.put(CLAUDE_PERMISSION_ENV, permissionDir);
         }
         String sid = getSessionId();
         if (sid != null) {
-            env.putIfAbsent(CLAUDE_SESSION_ID_ENV, sid);
+            env.put(CLAUDE_SESSION_ID_ENV, sid);
         }
     }
 
@@ -170,6 +183,21 @@ public class EnvironmentConfigurator {
             }
         }
         return this.sessionId;
+    }
+
+    /**
+     * Explicitly sets the session ID to align permission request routing
+     * across multiple bridge instances.
+     */
+    public void setSessionId(String sessionId) {
+        if (sessionId == null) {
+            return;
+        }
+        String normalized = sessionId.trim();
+        if (normalized.isEmpty()) {
+            return;
+        }
+        this.sessionId = normalized;
     }
 
     /**
@@ -203,6 +231,47 @@ public class EnvironmentConfigurator {
             return pathEnv.toLowerCase().contains(targetPath.toLowerCase());
         }
         return pathEnv.contains(targetPath);
+    }
+
+    /**
+     * Removes a specific path entry from the PATH environment variable.
+     * Performs case-insensitive comparison on Windows.
+     *
+     * @param pathEnv    The PATH environment variable value
+     * @param targetPath The path entry to remove
+     * @return PATH with the target entry removed
+     */
+    private String removePathEntry(String pathEnv, String targetPath) {
+        if (pathEnv == null || pathEnv.isEmpty() || targetPath == null || targetPath.isEmpty()) {
+            return pathEnv != null ? pathEnv : "";
+        }
+
+        String separator = File.pathSeparator;
+        String[] entries = pathEnv.split(Pattern.quote(separator));
+        StringBuilder result = new StringBuilder();
+
+        for (String entry : entries) {
+            String trimmedEntry = entry.trim();
+            if (trimmedEntry.isEmpty()) {
+                continue;
+            }
+            // Case-insensitive comparison on Windows, case-sensitive on Unix
+            boolean shouldSkip;
+            if (PlatformUtils.isWindows()) {
+                shouldSkip = trimmedEntry.equalsIgnoreCase(targetPath);
+            } else {
+                shouldSkip = trimmedEntry.equals(targetPath);
+            }
+
+            if (!shouldSkip) {
+                if (result.length() > 0) {
+                    result.append(separator);
+                }
+                result.append(trimmedEntry);
+            }
+        }
+
+        return result.toString();
     }
 
     /**

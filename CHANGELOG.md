@@ -1,3 +1,119 @@
+##### **2026年3月10日（v0.2.7）**
+
+English:
+
+✨ Features
+- Project-level prompt storage: dual-scope prompt management (global + project), store project prompts in within project root for team sharing via Git, separate UI sections for global and project prompts with complete CRUD operations, import/export support for both scopes, chat autocomplete displays both scopes with labels ([Global]/[Project]) (#598) #hpstream
+- Codex mode enhancements: support suggest (approval) mode, isolate permission approval for each conversation, separate Codex and Claude Code configuration UI, open agent configuration in Codex mode, adapt diff editor panel for Codex mode, fix MCP configuration page state (#571) #tonyshengbo
+- Improve Codex tool rendering with smart classification and file navigation (#607) #gadfly3173
+- Add AUTO_ALLOW_TOOLS category and improve plan mode permissions: auto-allow safe tools without user prompt (#609) #gadfly3173
+- Add Agent tool alias for Task in plan mode (#615) #gadfly3173
+- Add provider sorting functionality: drag-and-drop reorder for providers (#617) #fanchenggang
+- Add apiKeyHelper support for enterprise authentication: detect managed-settings.json for enterprise API key configuration (#623) #bdelamarre
+- Update Codex model list: add gpt-5.4 and remove gpt-5.2/gpt-5.3
+
+🐛 Fixes
+- Fix Codex stdio MCP server status that stays on pending: add handshake request for stdio MCP server (#499) #pwang1984
+- Fix Windows sound path issue for completion notification (#553) #z231485
+- Prepend configured Node.js path to ensure version priority over system default (#587) #gadfly3173
+- Resolve session transition races, streaming stability, and error deduplication (#600) #gadfly3173
+- Enhance SDK update and version handling: add --include=optional flag to npm install (#602) #gadfly3173
+- Add runtime session epoch isolation to prevent ghost messages (#611) #gadfly3173
+- Fix context menu cut function and enhance file tag handling (#625) #JackCmd233
+- Enforce UTF-8 charset for all file I/O operations
+- Replace experimental IntelliJ APIs with stable alternatives
+- Harden Codex path resolution and improve sandbox defaults: add path traversal guard
+
+🔧 Improvements
+- Refactor PromptManager to AbstractPromptManager base class with template methods, GlobalPromptManager, ProjectPromptManager, and PromptManagerFactory (#598) #hpstream
+- Extract shared provider sorting logic to reduce duplication
+- Extract shared command tool names and improve parsing robustness
+- Extract apiKeyHelper detection and add missing i18n keys
+- Replace hardcoded VSCode variables with design tokens in dialogs
+- Improve code quality with thread safety, defensive copying, and log cleanup
+
+中文：
+
+✨ Features
+- 项目级别提示词存储：双作用域提示词管理（全局 + 项目），项目提示词存储在项目根目录的 文件中可通过 Git 团队共享，全局和项目提示词分区展示并支持完整的增删改查操作，两个作用域均支持导入/导出功能，聊天自动补全同时显示两种作用域并带标签区分（[全局]/[项目]）(#598) #hpstream
+- Codex 模式增强：支持 suggest（审批）模式、会话级独立权限审批、拆分 Codex 和 Claude Code 配置界面、开放 Codex 模式下的智能体配置、适配 Codex 模式 diff 编辑面板、修复 MCP 配置页面状态 (#571) #tonyshengbo
+- 改进 Codex 工具渲染：智能分类和文件导航 (#607) #gadfly3173
+- 新增 AUTO_ALLOW_TOOLS 类别并改进 Plan 模式权限：安全工具免确认自动允许 (#609) #gadfly3173
+- Plan 模式支持 Agent 工具作为 Task 的别名 (#615) #gadfly3173
+- 新增 Provider 排序功能：支持拖拽排序 (#617) #fanchenggang
+- 新增 apiKeyHelper 企业认证支持：检测 managed-settings.json 中的企业 API Key 配置 (#623) #bdelamarre
+- 更新 Codex 模型列表：新增 gpt-5.4，移除 gpt-5.2/gpt-5.3
+
+🐛 Fixes
+- 修复 Codex stdio MCP 服务器状态持续 pending 问题：为 stdio MCP 服务器添加握手请求 (#499) #pwang1984
+- 修复 Windows 平台设置完成语音路径问题 (#553) #z231485
+- 修复配置的 Node.js 路径优先级：将用户配置路径前置以覆盖系统默认版本 (#587) #gadfly3173
+- 修复会话切换竞态、流式稳定性和错误去重 (#600) #gadfly3173
+- 增强 SDK 更新和版本处理：npm install 添加 --include=optional 参数 (#602) #gadfly3173
+- 新增运行时会话 epoch 隔离以防止幽灵消息 (#611) #gadfly3173
+- 修复上下文菜单剪切功能并增强文件标签处理 (#625) #JackCmd233
+- 强制所有文件 I/O 操作使用 UTF-8 编码
+- 替换实验性 IntelliJ API 为稳定替代方案
+- 加固 Codex 路径解析并改进沙箱默认值：添加路径遍历防护
+
+🔧 Improvements
+- 重构 PromptManager 为 AbstractPromptManager 抽象基类，提供模板方法、GlobalPromptManager、ProjectPromptManager 和 PromptManagerFactory (#598) #hpstream
+- 提取共享的 Provider 排序逻辑以减少重复代码
+- 提取共享命令工具名称并改进解析健壮性
+- 提取 apiKeyHelper 检测逻辑并补充缺失的 i18n 键
+- 将对话框中硬编码的 VSCode 变量替换为设计令牌
+- 改进代码质量：线程安全、防御性拷贝和日志清理
+
+---
+
+##### **2026年3月5日（v0.2.6）**
+
+English:
+
+✨ Features
+- Support pasting clipboard images in chat input: convert clipboard image data to base64 PNG on Java side, dispatch to webview via CustomEvent and add as attachment
+- Add subscription tutorial dialog for Claude and Codex providers: tabbed step-by-step instructions with code block copy functionality, i18n translations for 8 languages
+- Align slash command scanning with CLI behavior: rename PluginSkillPath to PluginPath with type field, add plugin namespace prefixing for commands, recursive directory scanning with SKILL.md leaf node detection, marketplace manifest fallback (#579) #gadfly3173
+- Add configurable "play sound only when IDE unfocused" setting: toggle under sound notification settings, defaults to disabled (#583) #PaulGiletich
+
+🐛 Fixes
+- Gate Write tool with permission check in plan mode: add Write to Edit/Bash permission check branch, remove Write/Edit/Bash from PLAN_MODE_ALLOWED_TOOLS, add findProjectByPath fallback and retry logic in tryDiffReview (#580) #gadfly3173
+- Align token usage display with CLI behavior: reset per-turn token accumulator on message_start, emit final accumulated usage before STREAM_END marker, add onUsageUpdate callback chain, show token info in IDEA status bar widget (#578) #gadfly3173
+- Fix token usage display in streaming and non-streaming modes: fix EDT thread violation in status bar widget, avoid duplicate updates, add monotonic increase check, unify JS bridge methods
+- Offload MCP server I/O to background threads: run MCP handler via CompletableFuture.runAsync, add 5-second timeout to command availability check
+- Harden plugin command scanning with depth limit and path safety: MAX_COMMAND_SCAN_DEPTH to prevent stack overflow, strengthen path traversal defense, deduplicate extracted paths
+- Address code review issues for security, quality and consistency: GSON encoding for base64 in JS injection prevention, fix i18n condition checks, replace hardcoded color with theme variable
+- Normalize sound config response format: include full config fields in all sound setting handler responses, replace inline style with CSS Module class
+
+🔧 Improvements
+- Refactor tool block collapse UI: all tools with params are now collapsible with chevron icon and CSS accordion animation (grid-template-rows transition)
+- Improve theme and responsive support: add CSS variables for notice-box colors with dark/light theme support, responsive layout for usage tabs on narrow viewports
+- Fix CSS class naming collision in usage stats (detail-item -> model-detail-item), change default date range from 30d to 7d
+
+中文：
+
+✨ Features
+- 支持在聊天输入框粘贴剪贴板图片：Java 端将剪贴板图片数据转换为 base64 PNG，通过 CustomEvent 分发到 webview 并作为附件添加
+- 新增 Claude 和 Codex 订阅教程对话框：分标签页的逐步操作说明，支持代码块复制功能，8 种语言国际化
+- 对齐斜杠命令扫描与 CLI 行为：PluginSkillPath 重命名为 PluginPath 并增加类型字段，添加插件命名空间前缀，递归目录扫描支持 SKILL.md 叶节点检测，市场清单回退 (#579) #gadfly3173
+- 新增 "仅在 IDE 失焦时播放提示音" 配置项：声音通知设置下的开关选项，默认关闭 (#583) #PaulGiletich
+
+🐛 Fixes
+- 修复 Plan 模式下 Write 工具权限检查：将 Write 加入 Edit/Bash 权限检查分支，从 PLAN_MODE_ALLOWED_TOOLS 中移除 Write/Edit/Bash，添加 findProjectByPath 回退和 tryDiffReview 重试逻辑 (#580) #gadfly3173
+- 修复 Token 用量显示对齐 CLI 行为：message_start 时重置每轮累计器，STREAM_END 前发送最终累计用量，添加 onUsageUpdate 回调链，IDEA 状态栏显示 Token 信息 (#578) #gadfly3173
+- 修复流式和非流式模式下 Token 用量显示：修复状态栏 Widget EDT 线程违规，避免重复更新，添加单调递增检查，统一 JS 桥接方法
+- 将 MCP 服务器 I/O 操作移至后台线程：通过 CompletableFuture.runAsync 运行 MCP 处理器，命令可用性检查添加 5 秒超时
+- 加固插件命令扫描安全：添加 MAX_COMMAND_SCAN_DEPTH 防止栈溢出，增强路径遍历防护，提取路径去重
+- 修复代码审查中的安全、质量和一致性问题：GSON 编码 base64 防止 JS 注入，修复 i18n 条件检查，硬编码颜色替换为主题变量
+- 规范化声音配置响应格式：所有声音设置处理器响应包含完整配置字段，内联样式替换为 CSS Module 类
+
+🔧 Improvements
+- 重构工具块折叠 UI：所有含参数的工具现在均可折叠，带有箭头图标和 CSS 手风琴动画（grid-template-rows 过渡）
+- 改进主题和响应式支持：为 notice-box 颜色添加 CSS 变量并支持深色/浅色主题，窄视口下 usage tabs 响应式布局
+- 修复使用统计中 CSS 类名冲突（detail-item -> model-detail-item），默认日期范围从 30 天改为 7 天
+
+---
+
 ##### **2026年3月4日（v0.2.5）**
 
 English:

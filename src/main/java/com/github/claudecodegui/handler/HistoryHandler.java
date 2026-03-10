@@ -351,6 +351,8 @@ public class HistoryHandler extends BaseMessageHandler {
             frontendMsg = CodexMessageConverter.convertFunctionCallToToolUse(payload, timestamp);
         } else if ("function_call_output".equals(payloadType)) {
             frontendMsg = CodexMessageConverter.convertFunctionCallOutputToToolResult(payload, timestamp);
+        } else if ("custom_tool_call".equals(payloadType)) {
+            frontendMsg = CodexMessageConverter.convertCustomToolCallToToolUse(payload, timestamp);
         }
 
         if (frontendMsg != null) {

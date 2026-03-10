@@ -10,6 +10,7 @@ import com.intellij.openapi.project.DumbAware;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.openapi.wm.ToolWindowManager;
+import com.intellij.ui.content.Content;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -70,6 +71,16 @@ public abstract class ChatToolWindowAction extends AnAction implements DumbAware
      */
     @Nullable
     protected ClaudeChatWindow getActiveChatWindow(@NotNull Project project) {
+        ToolWindowManager twm = ToolWindowManager.getInstance(project);
+        ToolWindow toolWindow = twm.getToolWindow(TOOL_WINDOW_ID);
+        if (toolWindow != null) {
+            Content selectedContent = toolWindow.getContentManager().getSelectedContent();
+            if (selectedContent != null) {
+                ClaudeChatWindow window = ClaudeSDKToolWindow.getChatWindowForContent(selectedContent);
+                if (window != null) return window;
+            }
+        }
+        // Fallback to legacy single-window lookup
         return ClaudeSDKToolWindow.getChatWindow(project);
     }
 }

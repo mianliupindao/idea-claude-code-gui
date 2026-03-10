@@ -7,6 +7,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Session state management.
@@ -24,6 +25,7 @@ public class SessionState {
         modes.add("default");
         modes.add("plan");
         modes.add("acceptEdits");
+        modes.add("autoEdit");
         modes.add("bypassPermissions");
         VALID_PERMISSION_MODES = Collections.unmodifiableSet(modes);
     }
@@ -38,6 +40,7 @@ public class SessionState {
     // Session identifiers
     private String sessionId;
     private String channelId;
+    private volatile String runtimeSessionEpoch = UUID.randomUUID().toString();
 
     // Session state — accessed only on EDT / single handler thread, no volatile needed.
     private boolean busy = false;
@@ -62,8 +65,8 @@ public class SessionState {
     // Codex reasoning effort (thinking depth)
     private volatile String reasoningEffort = "medium";
 
-    // Slash commands
-    private List<String> slashCommands = new ArrayList<>();
+    // Slash commands — volatile for cross-thread visibility (same reason as permissionMode/model/provider)
+    private volatile List<String> slashCommands = new ArrayList<>();
 
     // PSI context collection toggle
     private boolean psiContextEnabled = true;
@@ -123,6 +126,10 @@ public class SessionState {
 
     public String getReasoningEffort() {
         return reasoningEffort;
+    }
+
+    public String getRuntimeSessionEpoch() {
+        return runtimeSessionEpoch;
     }
 
     public List<String> getSlashCommands() {
@@ -186,6 +193,20 @@ public class SessionState {
 
     public void setReasoningEffort(String reasoningEffort) {
         this.reasoningEffort = reasoningEffort;
+    }
+
+    public void setRuntimeSessionEpoch(String runtimeSessionEpoch) {
+        if (runtimeSessionEpoch == null || runtimeSessionEpoch.trim().isEmpty()) {
+            this.runtimeSessionEpoch = UUID.randomUUID().toString();
+            return;
+        }
+        this.runtimeSessionEpoch = runtimeSessionEpoch;
+    }
+
+    public String rotateRuntimeSessionEpoch() {
+        String newEpoch = UUID.randomUUID().toString();
+        this.runtimeSessionEpoch = newEpoch;
+        return newEpoch;
     }
 
     public void setSlashCommands(List<String> slashCommands) {

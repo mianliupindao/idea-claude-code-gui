@@ -15,6 +15,7 @@ import com.intellij.openapi.vfs.LocalFileSystem;
 import java.awt.*;
 import java.io.File;
 import java.io.FileWriter;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -368,7 +369,7 @@ public class AgentHandler extends BaseMessageHandler {
                         fileToSave = new File(path + ".json");
                     }
 
-                    try (FileWriter writer = new FileWriter(fileToSave)) {
+                    try (FileWriter writer = new FileWriter(fileToSave, StandardCharsets.UTF_8)) {
                         gson.toJson(exportData, writer);
                         LOG.info("[AgentHandler] Successfully exported " + agents.size() + " agents to: " + fileToSave.getAbsolutePath());
 
@@ -432,7 +433,7 @@ public class AgentHandler extends BaseMessageHandler {
                         throw new Exception("File too large (> 5MB). Please reduce the number of items.");
                     }
 
-                    String content = new String(Files.readAllBytes(fileToImport.toPath()));
+                    String content = new String(Files.readAllBytes(fileToImport.toPath()), StandardCharsets.UTF_8);
                     JsonObject importData = gson.fromJson(content, JsonObject.class);
 
                     if (!importData.has("format") || !importData.get("format").getAsString().equals("claude-code-agents-export-v1")) {

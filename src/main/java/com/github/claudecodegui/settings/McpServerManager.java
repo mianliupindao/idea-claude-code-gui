@@ -12,6 +12,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -72,7 +73,7 @@ public class McpServerManager {
             File claudeJsonFile = claudeJsonPath.toFile();
 
             if (claudeJsonFile.exists()) {
-                try (FileReader reader = new FileReader(claudeJsonFile)) {
+                try (FileReader reader = new FileReader(claudeJsonFile, StandardCharsets.UTF_8)) {
                     JsonObject claudeJson = JsonParser.parseReader(reader).getAsJsonObject();
 
                     if (claudeJson.has("mcpServers") && claudeJson.get("mcpServers").isJsonObject()) {
@@ -227,7 +228,7 @@ public class McpServerManager {
             File claudeJsonFile = claudeJsonPath.toFile();
 
             if (claudeJsonFile.exists()) {
-                try (FileReader reader = new FileReader(claudeJsonFile)) {
+                try (FileReader reader = new FileReader(claudeJsonFile, StandardCharsets.UTF_8)) {
                     JsonObject claudeJson = JsonParser.parseReader(reader).getAsJsonObject();
 
                     // Ensure mcpServers object exists
@@ -311,7 +312,7 @@ public class McpServerManager {
                     }
 
                     // Write back to file
-                    try (FileWriter writer = new FileWriter(claudeJsonFile)) {
+                    try (FileWriter writer = new FileWriter(claudeJsonFile, StandardCharsets.UTF_8)) {
                         gson.toJson(claudeJson, writer);
                         writer.flush();  // Ensure data is fully flushed to disk
                     }
@@ -380,7 +381,7 @@ public class McpServerManager {
             File claudeJsonFile = claudeJsonPath.toFile();
 
             if (claudeJsonFile.exists()) {
-                try (FileReader reader = new FileReader(claudeJsonFile)) {
+                try (FileReader reader = new FileReader(claudeJsonFile, StandardCharsets.UTF_8)) {
                     JsonObject claudeJson = JsonParser.parseReader(reader).getAsJsonObject();
 
                     if (claudeJson.has("mcpServers") && claudeJson.get("mcpServers").isJsonObject()) {
@@ -403,7 +404,7 @@ public class McpServerManager {
                             }
 
                             // Write back to file
-                            try (FileWriter writer = new FileWriter(claudeJsonFile)) {
+                            try (FileWriter writer = new FileWriter(claudeJsonFile, StandardCharsets.UTF_8)) {
                                 gson.toJson(claudeJson, writer);
                                 writer.flush();  // Ensure data is fully flushed to disk
                             }

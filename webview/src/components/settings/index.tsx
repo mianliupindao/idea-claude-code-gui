@@ -13,6 +13,7 @@ import ProviderTabSection from './ProviderTabSection';
 import DependencySection from './DependencySection';
 import UsageSection from './UsageSection';
 import PlaceholderSection from './PlaceholderSection';
+import PermissionsSection from './PermissionsSection';
 import CommunitySection from './CommunitySection';
 import AgentSection from './AgentSection';
 import PromptSection from './PromptSection';
@@ -26,7 +27,6 @@ import {
   useProviderManagement,
   useCodexProviderManagement,
   useAgentManagement,
-  usePromptManagement,
   useSettingsWindowCallbacks,
 } from './hooks';
 
@@ -50,8 +50,6 @@ interface SettingsViewProps {
 const sendToJava = (message: string) => {
   if (window.sendToJava) {
     window.sendToJava(message);
-  } else {
-    console.warn('[SettingsView] sendToJava is not available');
   }
 };
 
@@ -71,10 +69,9 @@ const SettingsView = ({
 }: SettingsViewProps) => {
   const { t } = useTranslation();
   const isCodexMode = currentProvider === 'codex';
-  // Codex mode: allow providers, usage, mcp, and skills tabs, disable other features
-  // Note: 'skills' is now enabled for Codex as it supports .agents/skills/ directories
+  // Codex mode: align with Claude capabilities for settings tabs
   const disabledTabs = useMemo<SettingsTab[]>(
-    () => (isCodexMode ? ['permissions', 'agents'] : []),
+    () => [],
     [isCodexMode]
   );
   const [currentTab, setCurrentTab] = useState<SettingsTab>(() => {
@@ -176,36 +173,8 @@ const SettingsView = ({
     onSuccess: (msg) => addToast(msg, 'success'),
   });
 
-  // Use prompt management hook
-  const {
-    prompts,
-    promptsLoading,
-    promptDialog,
-    deletePromptConfirm,
-    importPreviewDialog: promptImportPreviewDialog,
-    exportDialog: promptExportDialog,
-    loadPrompts,
-    updatePrompts,
-    cleanupPromptsTimeout,
-    handleAddPrompt,
-    handleEditPrompt,
-    handleClosePromptDialog,
-    handleDeletePrompt,
-    handleSavePrompt,
-    confirmDeletePrompt,
-    cancelDeletePrompt,
-    handlePromptOperationResult,
-    handleExportPrompts,
-    handleCloseExportDialog: handleClosePromptExportDialog,
-    handleConfirmExport: handleConfirmPromptExport,
-    handleImportPromptsFile,
-    handlePromptImportPreviewResult,
-    handleCloseImportPreview: handleClosePromptImportPreview,
-    handleSaveImportedPrompts,
-    handlePromptImportResult,
-  } = usePromptManagement({
-    onSuccess: (msg) => addToast(msg, 'success'),
-  });
+  // Note: Prompt management is now handled internally by PromptSection component
+  // No need to use usePromptManagement hook here anymore
 
   // Current Claude CLI configuration (from ~/.claude/settings.json)
   const [claudeConfig, setClaudeConfig] = useState<ClaudeConfig | null>(null);
@@ -275,6 +244,7 @@ const SettingsView = ({
   // Streaming configuration - prefer props, fallback to local state (for backward compatibility when props are not passed)
   const [localStreamingEnabled, setLocalStreamingEnabled] = useState<boolean>(false);
   const streamingEnabled = streamingEnabledProp ?? localStreamingEnabled;
+  const [codexSandboxMode, setCodexSandboxMode] = useState<'workspace-write' | 'danger-full-access'>('workspace-write');
 
   // Send shortcut configuration - prefer props, fallback to local state
   const [localSendShortcut, setLocalSendShortcut] = useState<'enter' | 'cmdEnter'>('enter');
@@ -321,8 +291,9 @@ const SettingsView = ({
     }
   });
 
-  // 提示音配置
+  // Sound notification configuration
   const [soundNotificationEnabled, setSoundNotificationEnabled] = useState<boolean>(false);
+  const [soundOnlyWhenUnfocused, setSoundOnlyWhenUnfocused] = useState<boolean>(false);
   const [selectedSound, setSelectedSound] = useState<string>('default');
   const [customSoundPath, setCustomSoundPath] = useState<string>('');
 
@@ -336,7 +307,6 @@ const SettingsView = ({
 
   // Helper function to show in-page alert dialog
   const showAlert = (type: AlertType, title: string, message: string) => {
-    console.log('[SettingsView] showAlert called:', { type, title, message });
     setAlertDialog({ isOpen: true, type, title, message });
   };
 
@@ -359,6 +329,7 @@ const SettingsView = ({
     setEditorFontConfig,
     setIdeTheme,
     setLocalStreamingEnabled,
+    setCodexSandboxMode,
     setLocalSendShortcut,
     setLoading,
     setCodexLoading,
@@ -368,25 +339,21 @@ const SettingsView = ({
     loadProviders,
     loadCodexProviders,
     loadAgents,
-    loadPrompts,
     updateAgents,
     handleAgentOperationResult,
     handleAgentImportPreviewResult,
     handleAgentImportResult,
-    updatePrompts,
-    handlePromptOperationResult,
-    handlePromptImportPreviewResult,
-    handlePromptImportResult,
+    // Note: Prompt-related callbacks are now handled in PromptSection component
     updateCodexProviders,
     updateActiveCodexProvider,
     updateCurrentCodexConfig,
     cleanupAgentsTimeout,
-    cleanupPromptsTimeout,
     showAlert,
     addToast,
     onStreamingEnabledChangeProp,
     onSendShortcutChangeProp,
     setSoundNotificationEnabled,
+    setSoundOnlyWhenUnfocused,
     setSelectedSound,
     setCustomSoundPath,
   });
@@ -427,7 +394,6 @@ const SettingsView = ({
       if (preference === 'system') {
         // If following IDE, need to wait for IDE theme to load
         if (ideTheme === null) {
-          console.log('[SettingsView] Waiting for IDE theme to load...');
           return; // Wait for ideTheme to load
         }
         document.documentElement.setAttribute('data-theme', ideTheme);
@@ -526,6 +492,12 @@ const SettingsView = ({
     }
   };
 
+  const handleCodexSandboxModeChange = (mode: 'workspace-write' | 'danger-full-access') => {
+    setCodexSandboxMode(mode);
+    const payload = { sandboxMode: mode };
+    sendToJava(`set_codex_sandbox_mode:${JSON.stringify(payload)}`);
+  };
+
   // Send shortcut change handler
   const handleSendShortcutChange = (shortcut: 'enter' | 'cmdEnter') => {
     // If prop callback is provided (from App.tsx), use it for centralized state management
@@ -557,6 +529,13 @@ const SettingsView = ({
     setSoundNotificationEnabled(enabled);
     const payload = { enabled };
     sendToJava(`set_sound_notification_enabled:${JSON.stringify(payload)}`);
+  };
+
+  // Sound only-when-unfocused toggle change handler
+  const handleSoundOnlyWhenUnfocusedChange = (enabled: boolean) => {
+    setSoundOnlyWhenUnfocused(enabled);
+    const payload = { onlyWhenUnfocused: enabled };
+    sendToJava(`set_sound_only_when_unfocused:${JSON.stringify(payload)}`);
   };
 
   // Selected sound change handler
@@ -730,6 +709,8 @@ const SettingsView = ({
               onDiffExpandedByDefaultChange={setDiffExpandedByDefault}
               soundNotificationEnabled={soundNotificationEnabled}
               onSoundNotificationEnabledChange={handleSoundNotificationEnabledChange}
+              soundOnlyWhenUnfocused={soundOnlyWhenUnfocused}
+              onSoundOnlyWhenUnfocusedChange={handleSoundOnlyWhenUnfocusedChange}
               selectedSound={selectedSound}
               onSelectedSoundChange={handleSelectedSoundChange}
               customSoundPath={customSoundPath}
@@ -779,7 +760,14 @@ const SettingsView = ({
 
           {/* Permissions configuration */}
           <div style={{ display: currentTab === 'permissions' ? 'block' : 'none' }}>
-            <PlaceholderSection type="permissions" />
+            {currentProvider === 'codex' ? (
+              <PermissionsSection
+                codexSandboxMode={codexSandboxMode}
+                onCodexSandboxModeChange={handleCodexSandboxModeChange}
+              />
+            ) : (
+              <PlaceholderSection type="permissions" />
+            )}
           </div>
 
           {/* Commit AI configuration */}
@@ -808,13 +796,7 @@ const SettingsView = ({
           {/* Prompts */}
           <div style={{ display: currentTab === 'prompts' ? 'block' : 'none' }}>
             <PromptSection
-              prompts={prompts}
-              loading={promptsLoading}
-              onAdd={handleAddPrompt}
-              onEdit={handleEditPrompt}
-              onDelete={handleDeletePrompt}
-              onExport={handleExportPrompts}
-              onImport={handleImportPromptsFile}
+              onSuccess={(msg) => addToast(msg, 'success')}
             />
           </div>
 
@@ -873,19 +855,6 @@ const SettingsView = ({
         onConfirmAgentExport={handleConfirmAgentExport}
         onCloseAgentImportPreview={handleCloseAgentImportPreview}
         onSaveImportedAgents={handleSaveImportedAgents}
-        promptDialog={promptDialog}
-        deletePromptConfirm={deletePromptConfirm}
-        onClosePromptDialog={handleClosePromptDialog}
-        onSavePrompt={handleSavePrompt}
-        onConfirmDeletePrompt={confirmDeletePrompt}
-        onCancelDeletePrompt={cancelDeletePrompt}
-        promptExportDialog={promptExportDialog}
-        promptImportPreviewDialog={promptImportPreviewDialog}
-        prompts={prompts}
-        onClosePromptExportDialog={handleClosePromptExportDialog}
-        onConfirmPromptExport={handleConfirmPromptExport}
-        onClosePromptImportPreview={handleClosePromptImportPreview}
-        onSaveImportedPrompts={handleSaveImportedPrompts}
         addToast={addToast}
       />
 

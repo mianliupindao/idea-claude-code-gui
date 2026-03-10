@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import com.github.claudecodegui.ClaudeSession;
+import com.github.claudecodegui.CodemossSettingsService;
 import com.github.claudecodegui.dependency.DependencyManager;
 import com.github.claudecodegui.provider.common.BaseSDKBridge;
 import com.github.claudecodegui.provider.common.MessageCallback;
@@ -30,6 +31,18 @@ public class CodexSDKBridge extends BaseSDKBridge {
     // Codex API configuration
     private String baseUrl = null;
     private String apiKey = null;
+    private static final String SANDBOX_MODE_WORKSPACE_WRITE = "workspace-write";
+    private static final String SANDBOX_MODE_DANGER_FULL_ACCESS = "danger-full-access";
+    private static final String SANDBOX_MODE_READ_ONLY = "read-only";
+    private static final String APPROVAL_POLICY_NEVER = "never";
+    private static final String APPROVAL_POLICY_ON_REQUEST = "on-request";
+    private static final String APPROVAL_POLICY_UNTRUSTED = "untrusted";
+    private static final String ENV_CODEX_APPROVAL_POLICY = "CODEX_APPROVAL_POLICY";
+    private static final String ENV_CODEX_SANDBOX_MODE = "CODEX_SANDBOX_MODE";
+    private static final String ENV_CODEX_SANDBOX = "CODEX_SANDBOX";
+    private static final String ENV_CODEX_CI = "CODEX_CI";
+    private static final String ENV_CODEX_SANDBOX_NETWORK_DISABLED = "CODEX_SANDBOX_NETWORK_DISABLED";
+    private static final long MCP_TOOLS_TIMEOUT_MS = 65_000;
 
     public CodexSDKBridge() {
         super(CodexSDKBridge.class);
@@ -315,49 +328,38 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 }
 
                 // Override user's ~/.codex/config.toml sandbox and approval settings via environment variables
-                // Windows sandbox support is experimental, use danger-full-access mode
                 if (permissionMode != null && !permissionMode.isEmpty()) {
-                    // Check if running on Windows - Windows sandbox is experimental and may not work properly
-                    boolean isWindows = PlatformUtils.isWindows();
+                    String sandboxMode = resolveCodexSandboxMode(cwd);
 
                     switch (permissionMode) {
                         case "bypassPermissions":
-                            if (isWindows) {
-                                // Windows: use danger-full-access to bypass experimental sandbox
-                                env.put("CODEX_SANDBOX_MODE", "danger-full-access");
-                            } else {
-                                env.put("CODEX_SANDBOX_MODE", "workspace-write");
-                            }
-                            env.put("CODEX_APPROVAL_POLICY", "never");
+                            env.put(ENV_CODEX_SANDBOX_MODE, sandboxMode);
+                            env.put(ENV_CODEX_SANDBOX, sandboxMode);
+                            env.put(ENV_CODEX_APPROVAL_POLICY, APPROVAL_POLICY_NEVER);
                             break;
                         case "acceptEdits":
-                            if (isWindows) {
-                                // Windows: use danger-full-access to bypass experimental sandbox
-                                env.put("CODEX_SANDBOX_MODE", "danger-full-access");
-                            } else {
-                                env.put("CODEX_SANDBOX_MODE", "workspace-write");
-                            }
-                            env.put("CODEX_APPROVAL_POLICY", "auto-edit");
+                        case "autoEdit":
+                            env.put(ENV_CODEX_SANDBOX_MODE, sandboxMode);
+                            env.put(ENV_CODEX_SANDBOX, sandboxMode);
+                            env.put(ENV_CODEX_APPROVAL_POLICY, APPROVAL_POLICY_ON_REQUEST);
                             break;
                         case "plan":
-                            env.put("CODEX_SANDBOX_MODE", "read-only");
-                            env.put("CODEX_APPROVAL_POLICY", "untrusted");
+                            env.put(ENV_CODEX_SANDBOX_MODE, sandboxMode);
+                            env.put(ENV_CODEX_SANDBOX, sandboxMode);
+                            env.put(ENV_CODEX_APPROVAL_POLICY, APPROVAL_POLICY_UNTRUSTED);
                             break;
                         default:
-                            // Default mode: workspace-write with confirmation
-                            if (isWindows) {
-                                // Windows: use danger-full-access to bypass experimental sandbox
-                                env.put("CODEX_SANDBOX_MODE", "danger-full-access");
-                            } else {
-                                env.put("CODEX_SANDBOX_MODE", "workspace-write");
-                            }
-                            env.put("CODEX_APPROVAL_POLICY", "untrusted");
+                            // Default mode: use configured sandbox mode with confirmation
+                            env.put(ENV_CODEX_SANDBOX_MODE, sandboxMode);
+                            env.put(ENV_CODEX_SANDBOX, sandboxMode);
+                            env.put(ENV_CODEX_APPROVAL_POLICY, APPROVAL_POLICY_UNTRUSTED);
                             break;
                     }
                     LOG.info("[Codex] Permission env override: SANDBOX_MODE=" +
-                             env.get("CODEX_SANDBOX_MODE") + ", APPROVAL_POLICY=" +
-                             env.get("CODEX_APPROVAL_POLICY") + " (from permissionMode=" + permissionMode +
-                             ", isWindows=" + isWindows + ")");
+                            env.get(ENV_CODEX_SANDBOX_MODE) + ", SANDBOX=" +
+                            env.get(ENV_CODEX_SANDBOX) + ", APPROVAL_POLICY=" +
+                            env.get(ENV_CODEX_APPROVAL_POLICY) + " (from permissionMode=" + permissionMode +
+                            ")");
                 }
 
                 pb.redirectErrorStream(true);
@@ -365,6 +367,12 @@ public class CodexSDKBridge extends BaseSDKBridge {
 
                 // Configure Codex-specific env vars from ~/.codex/config.toml
                 envConfigurator.configureCodexEnv(env);
+                LOG.info("[Codex] Final Node permission env snapshot: CODEX_SANDBOX_MODE=" +
+                        env.get(ENV_CODEX_SANDBOX_MODE) + ", CODEX_SANDBOX=" +
+                        env.get(ENV_CODEX_SANDBOX) + ", CODEX_CI=" + env.get(ENV_CODEX_CI) +
+                        ", CODEX_SANDBOX_NETWORK_DISABLED=" + env.get(ENV_CODEX_SANDBOX_NETWORK_DISABLED) +
+                        ", CLAUDE_SESSION_ID=" + env.get("CLAUDE_SESSION_ID") +
+                        ", CLAUDE_PERMISSION_DIR=" + env.get("CLAUDE_PERMISSION_DIR"));
 
                 LOG.info("Command: " + String.join(" ", command));
 
@@ -393,83 +401,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                                 LOG.warn("[Node.js ERROR] " + line);
                                 lastNodeError[0] = line;
                             }
-
-                            // Print debug logs
-                            if (line.contains("[DEBUG]")) {
-                                LOG.debug("[Codex] " + line);
-                            }
-
-                            // Parse messages
-                            if (line.startsWith("[MESSAGE_START]")) {
-                                callback.onMessage("message_start", "");
-                            } else if (line.startsWith("[MESSAGE_END]")) {
-                                callback.onMessage("message_end", "");
-                            } else if (line.startsWith("[THREAD_ID]")) {
-                                String receivedThreadId = line.substring("[THREAD_ID]".length()).trim();
-                                callback.onMessage("session_id", receivedThreadId);
-                            } else if (line.startsWith("[MESSAGE]")) {
-                                String jsonStr = line.substring("[MESSAGE]".length()).trim();
-                                try {
-                                    JsonObject msg = gson.fromJson(jsonStr, JsonObject.class);
-                                    if (msg != null) {
-                                        String msgType = msg.has("type") && !msg.get("type").isJsonNull()
-                                                ? msg.get("type").getAsString()
-                                                : "unknown";
-
-                                        if ("status".equals(msgType)) {
-                                            String status = "";
-                                            if (msg.has("message") && !msg.get("message").isJsonNull()) {
-                                                JsonElement statusEl = msg.get("message");
-                                                status = statusEl.isJsonPrimitive() ? statusEl.getAsString() : statusEl.toString();
-                                            }
-                                            if (status != null && !status.isEmpty()) {
-                                                callback.onMessage("status", status);
-                                            }
-                                            continue;
-                                        }
-
-                                        result.messages.add(msg);
-
-                                        if ("assistant".equals(msgType)) {
-                                            try {
-                                                String extracted = extractAssistantText(msg);
-                                                if (extracted != null && !extracted.isEmpty()) {
-                                                    assistantContent.append(extracted);
-                                                }
-                                            } catch (Exception ignored) {
-                                            }
-                                        }
-
-                                        callback.onMessage(msgType, jsonStr);
-                                    }
-                                } catch (Exception ignored) {
-                                }
-                            } else if (line.startsWith("[CONTENT_DELTA]")) {
-                                String delta = line.substring("[CONTENT_DELTA]".length()).trim();
-                                assistantContent.append(delta);
-                                callback.onMessage("content_delta", delta);
-                            } else if (line.startsWith("[CONTENT]")) {
-                                String content = line.substring("[CONTENT]".length()).trim();
-                                // Avoid duplicate
-                                if (!assistantContent.toString().contains(content)) {
-                                    assistantContent.append(content);
-                                }
-                                callback.onMessage("content", content);
-                            } else if (line.startsWith("[SEND_ERROR]")) {
-                                String jsonStr = line.substring("[SEND_ERROR]".length()).trim();
-                                String errorMessage = jsonStr;
-                                try {
-                                    JsonObject obj = gson.fromJson(jsonStr, JsonObject.class);
-                                    if (obj.has("error")) {
-                                        errorMessage = obj.get("error").getAsString();
-                                    }
-                                } catch (Exception ignored) {
-                                }
-                                hadSendError[0] = true;
-                                result.success = false;
-                                result.error = errorMessage;
-                                callback.onError(errorMessage);
-                            }
+                            processOutputLine(line, callback, result, assistantContent, hadSendError, lastNodeError);
                         }
                     }
 
@@ -522,6 +454,164 @@ public class CodexSDKBridge extends BaseSDKBridge {
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) {
         LOG.info("getSessionMessages not supported by Codex SDK");
         return new ArrayList<>();
+    }
+
+    /**
+     * Gets the tool list for the specified Codex MCP server.
+     */
+    public CompletableFuture<JsonObject> getMcpServerTools(String serverId, JsonObject serverConfig) {
+        return CompletableFuture.supplyAsync(() -> {
+            Process process = null;
+            long startTime = System.currentTimeMillis();
+            LOG.info("[CodexMcpTools] Starting getMcpServerTools, serverId=" + serverId);
+
+            try {
+                String node = nodeDetector.findNodeExecutable();
+                File bridgeDir = getDirectoryResolver().findSdkDir();
+                if (bridgeDir == null || !bridgeDir.exists()) {
+                    JsonObject errorResult = new JsonObject();
+                    errorResult.addProperty("serverId", serverId);
+                    errorResult.addProperty("error", "Bridge directory not ready");
+                    errorResult.add("tools", new JsonArray());
+                    return errorResult;
+                }
+
+                JsonObject stdinInput = new JsonObject();
+                stdinInput.addProperty("serverId", serverId != null ? serverId : "");
+                if (serverConfig != null) {
+                    stdinInput.add("serverConfig", serverConfig);
+                } else {
+                    stdinInput.add("serverConfig", new JsonObject());
+                }
+                String stdinJson = gson.toJson(stdinInput);
+
+                List<String> command = new ArrayList<>();
+                command.add(node);
+                command.add(new File(bridgeDir, CHANNEL_SCRIPT).getAbsolutePath());
+                command.add("codex");
+                command.add("getMcpServerTools");
+
+                ProcessBuilder pb = new ProcessBuilder(command);
+                pb.directory(bridgeDir);
+                pb.redirectErrorStream(true);
+                envConfigurator.updateProcessEnvironment(pb, node);
+                pb.environment().put("CODEX_USE_STDIN", "true");
+
+                process = pb.start();
+                processManager.registerProcess("__codex_mcp_tools__", process);
+                final Process finalProcess = process;
+
+                try (java.io.OutputStream stdin = process.getOutputStream()) {
+                    stdin.write(stdinJson.getBytes(StandardCharsets.UTF_8));
+                    stdin.flush();
+                }
+
+                final boolean[] found = {false};
+                final boolean[] readerDone = {false};
+                final String[] toolsJson = {null};
+                final StringBuilder output = new StringBuilder();
+
+                Thread readerThread = new Thread(() -> {
+                    try (BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(finalProcess.getInputStream(), StandardCharsets.UTF_8))) {
+                        String line;
+                        while (!found[0] && (line = reader.readLine()) != null) {
+                            output.append(line).append("\n");
+                            if (line.startsWith("[MCP_SERVER_TOOLS]")) {
+                                toolsJson[0] = line.substring("[MCP_SERVER_TOOLS]".length()).trim();
+                                found[0] = true;
+                                break;
+                            }
+                        }
+                    } catch (Exception e) {
+                        LOG.debug("[CodexMcpTools] Reader thread exception: " + e.getMessage());
+                    } finally {
+                        readerDone[0] = true;
+                    }
+                });
+                readerThread.start();
+
+                long deadline = System.currentTimeMillis() + MCP_TOOLS_TIMEOUT_MS;
+                while (!found[0] && !readerDone[0] && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(100);
+                }
+
+                long elapsed = System.currentTimeMillis() - startTime;
+                if (process.isAlive()) {
+                    PlatformUtils.terminateProcess(process);
+                }
+
+                if (found[0] && toolsJson[0] != null && !toolsJson[0].isEmpty()) {
+                    try {
+                        JsonObject result = gson.fromJson(toolsJson[0], JsonObject.class);
+                        LOG.info("[CodexMcpTools] Got tools for " + serverId + " in " + elapsed + "ms");
+                        return result;
+                    } catch (Exception e) {
+                        LOG.warn("[CodexMcpTools] Failed to parse MCP tools JSON: " + e.getMessage());
+                    }
+                }
+
+                String outputStr = output.toString().trim();
+                String jsonStr = extractLastJsonLine(outputStr);
+                if (jsonStr != null) {
+                    try {
+                        JsonObject jsonResult = gson.fromJson(jsonStr, JsonObject.class);
+                        if (jsonResult != null && jsonResult.has("success")) {
+                            return jsonResult;
+                        }
+                    } catch (Exception e) {
+                        LOG.debug("[CodexMcpTools] Fallback JSON parse failed: " + e.getMessage());
+                    }
+                }
+
+                JsonObject errorResult = new JsonObject();
+                errorResult.addProperty("serverId", serverId);
+                errorResult.addProperty("error", "Failed to get tools list");
+                errorResult.add("tools", new JsonArray());
+                return errorResult;
+            } catch (Exception e) {
+                LOG.error("[CodexMcpTools] Exception: " + e.getMessage(), e);
+                JsonObject errorResult = new JsonObject();
+                errorResult.addProperty("serverId", serverId);
+                errorResult.addProperty("error", e.getMessage());
+                errorResult.add("tools", new JsonArray());
+                return errorResult;
+            } finally {
+                if (process != null) {
+                    try {
+                        if (process.isAlive()) {
+                            PlatformUtils.terminateProcess(process);
+                        }
+                    } finally {
+                        processManager.unregisterProcess("__codex_mcp_tools__", process);
+                    }
+                }
+            }
+        });
+    }
+
+    /**
+     * Extracts the last JSON object text from multi-line output.
+     */
+    private String extractLastJsonLine(String outputStr) {
+        if (outputStr == null || outputStr.isEmpty()) {
+            return null;
+        }
+        String[] lines = outputStr.split("\\r?\\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            if (line.startsWith("{") && line.endsWith("}")) {
+                return line;
+            }
+        }
+        if (outputStr.startsWith("{") && outputStr.endsWith("}")) {
+            return outputStr;
+        }
+        int jsonStart = outputStr.indexOf("{");
+        if (jsonStart != -1) {
+            return outputStr.substring(jsonStart);
+        }
+        return null;
     }
 
     // ============================================================================
@@ -675,5 +765,27 @@ public class CodexSDKBridge extends BaseSDKBridge {
             }
         }
         return sb.toString();
+    }
+    /**
+     * Resolve effective Codex sandbox mode from user settings.
+     * Falls back to platform defaults when settings are unavailable or invalid.
+     */
+    private String resolveCodexSandboxMode(String cwd) {
+        // Default to workspace-write (safer) on non-Windows; Windows sandbox is
+        // experimental so danger-full-access is used there as a platform fallback.
+        String defaultMode = PlatformUtils.isWindows()
+                ? SANDBOX_MODE_DANGER_FULL_ACCESS
+                : SANDBOX_MODE_WORKSPACE_WRITE;
+
+        try {
+            CodemossSettingsService settingsService = new CodemossSettingsService();
+            String configured = settingsService.getCodexSandboxMode(cwd);
+            if (SANDBOX_MODE_WORKSPACE_WRITE.equals(configured) || SANDBOX_MODE_DANGER_FULL_ACCESS.equals(configured)) {
+                return configured;
+            }
+        } catch (Exception e) {
+            LOG.warn("[Codex] Failed to read Codex sandbox mode config: " + e.getMessage());
+        }
+        return defaultMode;
     }
 }

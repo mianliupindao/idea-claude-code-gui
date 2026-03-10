@@ -11,8 +11,6 @@ import type { ToastMessage } from '../../Toast';
 const sendToJava = (message: string) => {
   if (window.sendToJava) {
     window.sendToJava(message);
-  } else {
-    console.warn('[SettingsView] sendToJava is not available');
   }
 };
 
@@ -31,12 +29,14 @@ export interface SettingsWindowCallbacksDeps {
   setEditorFontConfig: (config: { fontFamily: string; fontSize: number; lineSpacing: number } | undefined) => void;
   setIdeTheme: (theme: 'light' | 'dark' | null) => void;
   setLocalStreamingEnabled: (enabled: boolean) => void;
+  setCodexSandboxMode?: (mode: 'workspace-write' | 'danger-full-access') => void;
   setLocalSendShortcut: (shortcut: 'enter' | 'cmdEnter') => void;
   setLoading: (loading: boolean) => void;
   setCodexLoading: (loading: boolean) => void;
   setCodexConfigLoading: (loading: boolean) => void;
   // Sound notification setters
   setSoundNotificationEnabled?: (enabled: boolean) => void;
+  setSoundOnlyWhenUnfocused?: (enabled: boolean) => void;
   setSelectedSound?: (soundId: string) => void;
   setCustomSoundPath?: (path: string) => void;
 
@@ -46,20 +46,22 @@ export interface SettingsWindowCallbacksDeps {
   loadProviders: () => void;
   loadCodexProviders: () => void;
   loadAgents: () => void;
-  loadPrompts: () => void;
   updateAgents: (agents: AgentConfig[]) => void;
   handleAgentOperationResult: (result: any) => void;
   handleAgentImportPreviewResult: (previewData: any) => void;
   handleAgentImportResult: (result: any) => void;
-  updatePrompts: (prompts: PromptConfig[]) => void;
-  handlePromptOperationResult: (result: any) => void;
-  handlePromptImportPreviewResult: (previewData: any) => void;
-  handlePromptImportResult: (result: any) => void;
   updateCodexProviders: (providers: CodexProviderConfig[]) => void;
   updateActiveCodexProvider: (provider: CodexProviderConfig) => void;
   updateCurrentCodexConfig: (config: any) => void;
   cleanupAgentsTimeout: () => void;
-  cleanupPromptsTimeout: () => void;
+
+  // Prompt-related handlers (optional - now handled by PromptSection component)
+  loadPrompts?: () => void;
+  updatePrompts?: (prompts: PromptConfig[]) => void;
+  handlePromptOperationResult?: (result: any) => void;
+  handlePromptImportPreviewResult?: (previewData: any) => void;
+  handlePromptImportResult?: (result: any) => void;
+  cleanupPromptsTimeout?: () => void;
 
   // Callbacks
   showAlert: (type: AlertType, title: string, message: string) => void;
@@ -203,6 +205,19 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
       };
     }
 
+    // Codex sandbox mode callback
+    window.updateCodexSandboxMode = (jsonStr: string) => {
+      try {
+        const data = JSON.parse(jsonStr);
+        const mode = data?.sandboxMode;
+        if (mode === 'workspace-write' || mode === 'danger-full-access') {
+          d().setCodexSandboxMode?.(mode);
+        }
+      } catch (error) {
+        console.error('[SettingsView] Failed to parse Codex sandbox mode config:', error);
+      }
+    };
+
     // Send shortcut configuration callback
     const previousUpdateSendShortcut = window.updateSendShortcut;
     if (!d().onSendShortcutChangeProp) {
@@ -238,6 +253,9 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
         const data = JSON.parse(jsonStr);
         if (data.enabled !== undefined) {
           d().setSoundNotificationEnabled?.(data.enabled);
+        }
+        if (data.onlyWhenUnfocused !== undefined) {
+          d().setSoundOnlyWhenUnfocused?.(data.onlyWhenUnfocused);
         }
         if (data.selectedSound !== undefined) {
           d().setSelectedSound?.(data.selectedSound);
@@ -293,12 +311,12 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
       }
     };
 
-    // Prompt library callbacks
+    // Prompt library callbacks (legacy support - now primarily handled by PromptSection)
     const previousUpdatePrompts = window.updatePrompts;
     window.updatePrompts = (jsonStr: string) => {
       try {
         const promptsList: PromptConfig[] = JSON.parse(jsonStr);
-        d().updatePrompts(promptsList);
+        d().updatePrompts?.(promptsList);
       } catch (error) {
         console.error('[SettingsView] Failed to parse prompts:', error);
       }
@@ -308,7 +326,7 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
     window.promptOperationResult = (jsonStr: string) => {
       try {
         const result = JSON.parse(jsonStr);
-        d().handlePromptOperationResult(result);
+        d().handlePromptOperationResult?.(result);
       } catch (error) {
         console.error('[SettingsView] Failed to parse prompt operation result:', error);
       }
@@ -321,7 +339,7 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
           console.error('[SettingsView] Invalid prompt import preview data structure');
           return;
         }
-        d().handlePromptImportPreviewResult(previewData);
+        d().handlePromptImportPreviewResult?.(previewData);
       } catch (error) {
         console.error('[SettingsView] Failed to parse prompt import preview result:', error);
       }
@@ -330,7 +348,7 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
     window.promptImportResult = (jsonStr: string) => {
       try {
         const result = JSON.parse(jsonStr);
-        d().handlePromptImportResult(result);
+        d().handlePromptImportResult?.(result);
       } catch (error) {
         console.error('[SettingsView] Failed to parse prompt import result:', error);
       }
@@ -372,19 +390,21 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
     d().loadProviders();
     d().loadCodexProviders();
     d().loadAgents();
-    d().loadPrompts();
+    // Note: loadPrompts is now handled by PromptSection component
+    d().loadPrompts?.();
     d().setClaudeConfigLoading(true);
     sendToJava('get_current_claude_config:');
     sendToJava('get_node_path:');
     sendToJava('get_working_directory:');
     sendToJava('get_editor_font_config:');
     sendToJava('get_streaming_enabled:');
+    sendToJava('get_codex_sandbox_mode:');
     sendToJava('get_commit_prompt:');
     sendToJava('get_sound_notification_config:');
 
     return () => {
       d().cleanupAgentsTimeout();
-      d().cleanupPromptsTimeout();
+      d().cleanupPromptsTimeout?.();
 
       window.updateProviders = undefined;
       window.updateActiveProvider = undefined;
@@ -400,6 +420,7 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
       if (!d().onStreamingEnabledChangeProp) {
         window.updateStreamingEnabled = previousUpdateStreamingEnabled;
       }
+      window.updateCodexSandboxMode = undefined;
       if (!d().onSendShortcutChangeProp) {
         window.updateSendShortcut = previousUpdateSendShortcut;
       }

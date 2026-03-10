@@ -3,18 +3,20 @@
  * Keeps Claude Query processes alive across turns to reduce per-request latency.
  */
 
-import {
-  loadClaudeSdk
-} from '../../utils/sdk-loader.js';
-import { setupApiKey, isCustomBaseUrl, loadClaudeSettings } from '../../config/api-config.js';
+import { loadClaudeSdk } from '../../utils/sdk-loader.js';
+import { isCustomBaseUrl, loadClaudeSettings, setupApiKey } from '../../config/api-config.js';
 import { selectWorkingDirectory } from '../../utils/path-utils.js';
-import { mapModelIdToSdkName, resolveModelFromSettings, setModelEnvironmentVariables } from '../../utils/model-utils.js';
+import {
+  mapModelIdToSdkName,
+  resolveModelFromSettings,
+  setModelEnvironmentVariables
+} from '../../utils/model-utils.js';
 import { AsyncStream } from '../../utils/async-stream.js';
 import { canUseTool, requestPlanApproval } from '../../permission-handler.js';
-import { loadAttachments, buildContentBlocks } from './attachment-service.js';
+import { buildContentBlocks, loadAttachments } from './attachment-service.js';
 import { buildIDEContextPrompt } from '../system-prompts.js';
 import { buildQuickFixPrompt } from '../quickfix-prompts.js';
-import { mergeUsage, emitAccumulatedUsage } from '../../utils/usage-utils.js';
+import { emitAccumulatedUsage, mergeUsage } from '../../utils/usage-utils.js';
 import { registerActiveQueryResult, removeSession } from './message-service.js';
 
 const runtimesBySessionId = new Map();
@@ -261,12 +263,13 @@ function normalizePermissionMode(permissionMode) {
   return 'default';
 }
 
-function buildRuntimeSignature(options, systemPromptAppend, streamingEnabled) {
+function buildRuntimeSignature(options, systemPromptAppend, streamingEnabled, runtimeSessionEpoch) {
   const material = {
     cwd: options.cwd || '',
     additionalDirectories: options.additionalDirectories || [],
     systemPromptAppend: systemPromptAppend || '',
-    streamingEnabled: !!streamingEnabled
+    streamingEnabled: !!streamingEnabled,
+    runtimeSessionEpoch: runtimeSessionEpoch || ''
   };
   return JSON.stringify(material);
 }
@@ -366,6 +369,9 @@ async function buildRequestContext(params, withAttachments) {
   const requestedSessionId = (typeof params.sessionId === 'string' && params.sessionId.trim() !== '')
     ? params.sessionId.trim()
     : null;
+  const runtimeSessionEpoch = (typeof params.runtimeSessionEpoch === 'string' && params.runtimeSessionEpoch.trim() !== '')
+    ? params.runtimeSessionEpoch.trim()
+    : null;
 
   const workingDirectory = selectWorkingDirectory(params.cwd || null);
   try {
@@ -392,20 +398,28 @@ async function buildRequestContext(params, withAttachments) {
 
   const userMessage = await buildUserMessage(params, withAttachments, requestedSessionId);
 
+  const runtimeSignature = buildRuntimeSignature(options, systemPromptAppend, streamingEnabled, runtimeSessionEpoch);
+  console.log('[LIFECYCLE] buildRequestContext sessionId=' + (requestedSessionId || '(new)')
+    + ' epoch=' + (runtimeSessionEpoch || '(none)')
+    + ' signature=' + runtimeSignature);
+
   return {
     requestedSessionId,
+    runtimeSessionEpoch,
     streamingEnabled,
     options,
     userMessage,
     sdkModelName,
     permissionMode,
     maxThinkingTokens,
-    runtimeSignature: buildRuntimeSignature(options, systemPromptAppend, streamingEnabled)
+    runtimeSignature
   };
 }
 
 function registerRuntimeSession(runtime, sessionId) {
   if (!sessionId) return;
+  console.log('[LIFECYCLE] registerRuntimeSession sessionId=' + sessionId
+    + ' epoch=' + (runtime?.runtimeSessionEpoch || '(none)'));
   for (const [signature, item] of anonymousRuntimesBySignature.entries()) {
     if (item === runtime) {
       anonymousRuntimesBySignature.delete(signature);
@@ -418,6 +432,7 @@ function registerRuntimeSession(runtime, sessionId) {
     }
   }
   runtime.sessionId = sessionId;
+  runtime.runtimeSessionEpoch = runtime.runtimeSessionEpoch || null;
   runtimesBySessionId.set(sessionId, runtime);
   anonymousRuntimes.delete(runtime);
   registerActiveQueryResult(sessionId, runtime.query);
@@ -425,6 +440,9 @@ function registerRuntimeSession(runtime, sessionId) {
 
 async function disposeRuntime(runtime) {
   if (!runtime || runtime.closed) return;
+  console.log('[LIFECYCLE] disposeRuntime sessionId=' + (runtime.sessionId || '(new)')
+    + ' epoch=' + (runtime.runtimeSessionEpoch || '(none)')
+    + ' signature=' + (runtime.runtimeSignature || '(none)'));
   runtime.closed = true;
 
   try {
@@ -457,6 +475,7 @@ async function createRuntime(requestContext) {
   const runtime = {
     closed: false,
     sessionId: requestContext.requestedSessionId || null,
+    runtimeSessionEpoch: requestContext.runtimeSessionEpoch || null,
     runtimeSignature: requestContext.runtimeSignature,
     currentModel: requestContext.sdkModelName || null,
     currentPermissionMode: initialPermissionMode,
@@ -504,6 +523,10 @@ async function createRuntime(requestContext) {
     anonymousRuntimesBySignature.set(requestContext.runtimeSignature, runtime);
   }
 
+  console.log('[LIFECYCLE] createRuntime sessionId=' + (runtime.sessionId || '(new)')
+    + ' epoch=' + (runtime.runtimeSessionEpoch || '(none)')
+    + ' signature=' + runtime.runtimeSignature);
+
   return runtime;
 }
 
@@ -546,11 +569,36 @@ async function applyDynamicControls(runtime, requestContext) {
   }
 }
 
+function assertRuntimeOwnership(runtime, requestContext) {
+  if (!runtime || runtime.closed) {
+    const err = new Error('Runtime is closed');
+    err.runtimeTerminated = true;
+    throw err;
+  }
+
+  if (requestContext.runtimeSessionEpoch && runtime.runtimeSessionEpoch !== requestContext.runtimeSessionEpoch) {
+    const err = new Error(
+      `Runtime ownership mismatch: expected epoch ${requestContext.runtimeSessionEpoch}, got ${runtime.runtimeSessionEpoch || '(none)'}`
+    );
+    err.runtimeTerminated = true;
+    throw err;
+  }
+
+  if (requestContext.requestedSessionId && runtime.sessionId && runtime.sessionId !== requestContext.requestedSessionId) {
+    const err = new Error(
+      `Runtime ownership mismatch: expected session ${requestContext.requestedSessionId}, got ${runtime.sessionId}`
+    );
+    err.runtimeTerminated = true;
+    throw err;
+  }
+}
+
 const ANONYMOUS_RUNTIME_MAX_IDLE_MS = 10 * 60 * 1000; // 10 minutes
 
 async function cleanupStaleAnonymousRuntimes() {
   const now = Date.now();
-  for (const runtime of anonymousRuntimes) {
+  const snapshot = [...anonymousRuntimes];
+  for (const runtime of snapshot) {
     if (runtime.closed) {
       anonymousRuntimes.delete(runtime);
       continue;
@@ -578,10 +626,22 @@ async function acquireRuntime(requestContext) {
     runtime = null;
   }
 
-  if (!runtime) {
-    runtime = await createRuntime(requestContext);
+  if (runtime && requestContext.runtimeSessionEpoch && runtime.runtimeSessionEpoch !== requestContext.runtimeSessionEpoch) {
+    console.log('[LIFECYCLE] disposeRuntimeForEpochMismatch existing=' + (runtime.runtimeSessionEpoch || '(none)')
+      + ' requested=' + requestContext.runtimeSessionEpoch);
+    await disposeRuntime(runtime);
+    runtime = null;
   }
 
+  if (!runtime) {
+    runtime = await createRuntime(requestContext);
+  } else {
+    console.log('[LIFECYCLE] reuseRuntime sessionId=' + (runtime.sessionId || '(new)')
+      + ' epoch=' + (runtime.runtimeSessionEpoch || '(none)')
+      + ' signature=' + runtime.runtimeSignature);
+  }
+
+  assertRuntimeOwnership(runtime, requestContext);
   await applyDynamicControls(runtime, requestContext);
   runtime.lastUsedAt = Date.now();
   return runtime;
@@ -591,9 +651,9 @@ function processStreamEvent(msg, turnState) {
   const event = msg.event;
   if (!event) return;
 
-  // Handle message_start: accumulate input_tokens, cache_*_tokens
+  // Handle message_start: reset per-turn accumulator (matches CLI behavior)
   if (event.type === 'message_start' && event.message?.usage) {
-    turnState.accumulatedUsage = mergeUsage(turnState.accumulatedUsage, event.message.usage);
+    turnState.accumulatedUsage = mergeUsage(null, event.message.usage);
   }
 
   // Handle message_delta: accumulate output_tokens and emit [USAGE] tag
@@ -697,6 +757,8 @@ async function executeTurn(runtime, requestContext, turnMeta) {
   }
 
   activeTurnRuntime = runtime;
+  console.log('[LIFECYCLE] executeTurn sessionId=' + (requestContext.requestedSessionId || runtime.sessionId || '(new)')
+    + ' epoch=' + (requestContext.runtimeSessionEpoch || runtime.runtimeSessionEpoch || '(none)'));
 
   const turnState = {
     streamingEnabled: requestContext.streamingEnabled,
@@ -767,7 +829,11 @@ async function executeTurn(runtime, requestContext, turnMeta) {
   }
 
   if (turnState.streamingEnabled && turnState.streamStarted && !turnState.streamEnded) {
-    console.log('[STREAM_END]');
+    // Emit final accumulated usage before stream end
+    if (turnState.accumulatedUsage) {
+      emitAccumulatedUsage(turnState.accumulatedUsage);
+    }
+    process.stdout.write('[STREAM_END]\n');
     turnState.streamEnded = true;
   }
 
@@ -826,7 +892,11 @@ async function sendInternal(params, withAttachments) {
       activeTurnRuntime = null;
     }
     if (turnMeta.state?.streamingEnabled && turnMeta.state?.streamStarted && !turnMeta.state?.streamEnded) {
-      console.log('[STREAM_END]');
+      // Emit final accumulated usage before stream end
+      if (turnMeta.state?.accumulatedUsage) {
+        emitAccumulatedUsage(turnMeta.state.accumulatedUsage);
+      }
+      process.stdout.write('[STREAM_END]\n');
       turnMeta.state.streamEnded = true;
     }
     emitSendError(runtime, error, requestContext);
@@ -848,7 +918,32 @@ export async function sendMessageWithAttachmentsPersistent(params = {}) {
 export async function preconnectPersistent(params = {}) {
   const safeParams = params || {};
   const requestContext = await buildRequestContext(safeParams, false);
+  console.log('[LIFECYCLE] preconnectPersistent epoch=' + (requestContext.runtimeSessionEpoch || '(none)'));
   await acquireRuntime(requestContext);
+}
+
+export async function resetRuntimePersistent(params = {}) {
+  const runtimeSessionEpoch = typeof params === 'string'
+    ? params
+    : (params?.runtimeSessionEpoch || null);
+
+  console.log('[LIFECYCLE] resetRuntimePersistent targetEpoch=' + (runtimeSessionEpoch || '(all-runtimes)'));
+
+  const runtimes = new Set([
+    ...anonymousRuntimes,
+    ...anonymousRuntimesBySignature.values(),
+    ...runtimesBySessionId.values(),
+    activeTurnRuntime
+  ].filter(Boolean));
+
+  for (const runtime of runtimes) {
+    if (!runtimeSessionEpoch || runtime.runtimeSessionEpoch === runtimeSessionEpoch) {
+      await disposeRuntime(runtime);
+      if (activeTurnRuntime === runtime) {
+        activeTurnRuntime = null;
+      }
+    }
+  }
 }
 
 export async function abortCurrentTurn() {
@@ -857,6 +952,7 @@ export async function abortCurrentTurn() {
   // a non-null runtime, subsequent callers see null and exit early.
   const runtime = activeTurnRuntime;
   if (!runtime) return;
+  console.log('[LIFECYCLE] abortCurrentTurn epoch=' + (runtime.runtimeSessionEpoch || '(none)'));
   activeTurnRuntime = null;
 
   try {
@@ -882,3 +978,35 @@ export async function shutdownPersistentRuntimes() {
   runtimesBySessionId.clear();
   cachedQueryFn = null;
 }
+
+export const __testing = {
+  async resetState() {
+    await shutdownPersistentRuntimes();
+    activeTurnRuntime = null;
+  },
+  setQueryFn(queryFn) {
+    cachedQueryFn = queryFn;
+  },
+  async buildRequestContext(params = {}, withAttachments = false) {
+    return buildRequestContext(params, withAttachments);
+  },
+  async acquireRuntime(requestContext) {
+    return acquireRuntime(requestContext);
+  },
+  async resetRuntimePersistent(params = {}) {
+    return resetRuntimePersistent(params);
+  },
+  setActiveTurnRuntime(runtime) {
+    activeTurnRuntime = runtime;
+  },
+  getRuntimeForSession(sessionId) {
+    return runtimesBySessionId.get(sessionId) || null;
+  },
+  getSnapshot() {
+    return {
+      anonymousRuntimeCount: anonymousRuntimes.size,
+      sessionRuntimeCount: runtimesBySessionId.size,
+      activeTurnEpoch: activeTurnRuntime?.runtimeSessionEpoch || null
+    };
+  }
+};

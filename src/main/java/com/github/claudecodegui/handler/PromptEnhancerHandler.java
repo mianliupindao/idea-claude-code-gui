@@ -4,7 +4,6 @@ import com.github.claudecodegui.bridge.EnvironmentConfigurator;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
@@ -192,7 +191,7 @@ public class PromptEnhancerHandler extends BaseMessageHandler {
         try {
             // Use ReadAction to safely access the editor from the read thread
             ApplicationManager.getApplication().invokeAndWait(() -> {
-                ReadAction.run(() -> {
+                ApplicationManager.getApplication().runReadAction(() -> {
                     try {
                         JsonObject contextObj = new JsonObject();
                         boolean hasContext = false;

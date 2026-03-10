@@ -2,11 +2,13 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ToolInput, ToolResultBlock } from '../../types';
 import { openFile, showDiff, refreshFile } from '../../utils/bridge';
-import { getFileName } from '../../utils/helpers';
 import { getFileIcon } from '../../utils/fileIcons';
+import { resolveToolTarget } from '../../utils/toolPresentation';
 
 interface EditItem {
   filePath: string;
+  openPath: string;
+  displayPath: string;
   fileName: string;
   oldString: string;
   newString: string;
@@ -87,15 +89,15 @@ function parseEditItem(item: { name?: string; input?: ToolInput; result?: ToolRe
   const { input, result } = item;
   if (!input) return null;
 
-  // Extract file path (ensure it is a string, not an object)
-  const filePath =
-    (typeof input.file_path === 'string' ? input.file_path : undefined) ??
-    (typeof input.filePath === 'string' ? input.filePath : undefined) ??
-    (typeof input.path === 'string' ? input.path : undefined) ??
-    (typeof input.target_file === 'string' ? input.target_file : undefined) ??
-    (typeof input.targetFile === 'string' ? input.targetFile : undefined);
+  const target = resolveToolTarget({
+    ...input,
+    file_path: (typeof input.file_path === 'string' ? input.file_path : undefined) ??
+      (typeof input.filePath === 'string' ? input.filePath : undefined),
+    target_file: (typeof input.target_file === 'string' ? input.target_file : undefined) ??
+      (typeof input.targetFile === 'string' ? input.targetFile : undefined),
+  }, item.name);
 
-  if (!filePath) return null;
+  if (!target) return null;
 
   const oldString =
     (typeof input.old_string === 'string' ? input.old_string : undefined) ??
@@ -111,8 +113,10 @@ function parseEditItem(item: { name?: string; input?: ToolInput; result?: ToolRe
   const isError = isCompleted && result?.is_error === true;
 
   return {
-    filePath,
-    fileName: getFileName(filePath) || filePath,
+    filePath: target.rawPath,
+    openPath: target.openPath,
+    displayPath: target.displayPath,
+    fileName: target.cleanFileName,
     oldString,
     newString,
     additions,
@@ -123,12 +127,11 @@ function parseEditItem(item: { name?: string; input?: ToolInput; result?: ToolRe
 }
 
 /**
- * Get file icon SVG
+ * Get file icon SVG by file name (with extension).
  */
-function getFileIconSvg(filePath: string): string {
-  const name = getFileName(filePath);
-  const extension = name.indexOf('.') !== -1 ? name.split('.').pop() : '';
-  return getFileIcon(extension, name);
+function getFileIconSvg(fileName: string): string {
+  const extension = fileName.includes('.') ? fileName.split('.').pop() : '';
+  return getFileIcon(extension ?? '', fileName);
 }
 
 const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
@@ -150,7 +153,7 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
     editItems.forEach(item => {
       if (item.isCompleted && !item.isError && !refreshedFilesRef.current.has(item.filePath)) {
         refreshedFilesRef.current.add(item.filePath);
-        refreshFile(item.filePath);
+        refreshFile(item.openPath);
       }
     });
   }, [editItems]);
@@ -184,7 +187,7 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
 
   const handleShowDiff = (item: EditItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    showDiff(item.filePath, item.oldString, item.newString, t('tools.editPrefix', { fileName: item.fileName }));
+    showDiff(item.openPath, item.oldString, item.newString, t('tools.editPrefix', { fileName: item.fileName }));
   };
 
   const handleRefresh = (filePath: string, e: React.MouseEvent) => {
@@ -272,11 +275,11 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
                   height: '16px',
                   flexShrink: 0,
                 }}
-                dangerouslySetInnerHTML={{ __html: getFileIconSvg(item.filePath) }}
+                dangerouslySetInnerHTML={{ __html: getFileIconSvg(item.fileName) }}
               />
               <span
                 className="clickable-file"
-                onClick={(e) => handleFileClick(item.filePath, e)}
+                onClick={(e) => handleFileClick(item.openPath, e)}
                 style={{
                   fontSize: '12px',
                   color: 'var(--text-primary)',
@@ -287,9 +290,9 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
                   minWidth: 0,
                   cursor: 'pointer',
                 }}
-                title={item.filePath}
+                title={item.displayPath}
               >
-                {item.fileName}
+                {item.displayPath}
               </span>
 
               {/* Diff stats */}
@@ -319,7 +322,7 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
                   <span className="codicon codicon-diff" style={{ fontSize: '12px' }} />
                 </button>
                 <button
-                  onClick={(e) => handleRefresh(item.filePath, e)}
+                  onClick={(e) => handleRefresh(item.openPath, e)}
                   title={t('tools.refreshFileInIdea')}
                   className="edit-group-action-btn"
                 >

@@ -26,6 +26,10 @@ export {
   promptToDropdownItem,
   setupPromptsCallback,
   resetPromptsState,
+  updateGlobalPromptsCache,
+  updateProjectPromptsCache,
+  preloadPrompts,
+  forceRefreshPrompts,
 } from './promptProvider';
 
 export type { PromptItem } from './promptProvider';

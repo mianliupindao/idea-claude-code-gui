@@ -1,3 +1,5 @@
+@import '../shared/drag-sort.less';
+
 .configSection {
   min-width: 400px;
   padding-bottom: 24px;
@@ -75,12 +77,19 @@
     border-color: #0078d4;
     box-shadow: 0 0 0 1px rgba(0, 120, 212, 0.1);
   }
+
+  .drag-sort-card();
+}
+
+.dragHandle {
+  .drag-handle();
 }
 
 .providerInfo {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1;
 }
 
 .providerName {

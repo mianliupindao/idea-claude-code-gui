@@ -8,7 +8,6 @@ import type { ServerToolsState, McpTool, RefreshLog, CacheKeys } from '../types'
 import { writeToolsCache } from '../utils';
 
 export interface UseToolsUpdateOptions {
-  isCodexMode: boolean;
   cacheKeys: CacheKeys;
   setServerTools: React.Dispatch<React.SetStateAction<ServerToolsState>>;
   onLog: (message: string, type: RefreshLog['type'], details?: string, serverName?: string, requestInfo?: string, errorReason?: string) => void;
@@ -19,17 +18,11 @@ export interface UseToolsUpdateOptions {
  * Registers window.updateMcpServerTools callback
  */
 export function useToolsUpdate({
-  isCodexMode,
   cacheKeys,
   setServerTools,
   onLog,
 }: UseToolsUpdateOptions): void {
   useEffect(() => {
-    if (isCodexMode) {
-      // Tools list update not needed in Codex mode
-      return;
-    }
-
     // Register tools list update callback
     const handleToolsUpdate = (jsonStr: string) => {
       try {
@@ -116,5 +109,5 @@ export function useToolsUpdate({
     return () => {
       window.updateMcpServerTools = undefined;
     };
-  }, [isCodexMode, cacheKeys, setServerTools, onLog]);
+  }, [cacheKeys, setServerTools, onLog]);
 }

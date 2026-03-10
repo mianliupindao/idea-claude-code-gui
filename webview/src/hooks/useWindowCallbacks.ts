@@ -34,6 +34,7 @@ export interface ContextInfo {
 export interface UseWindowCallbacksOptions {
   t: TFunction;
   addToast: (message: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
+  clearToasts: () => void;
 
   // State setters
   setMessages: React.Dispatch<React.SetStateAction<ClaudeMessage[]>>;
@@ -50,6 +51,7 @@ export interface UseWindowCallbacksOptions {
   setUsageMaxTokens: React.Dispatch<React.SetStateAction<number | undefined>>;
   setPermissionMode: React.Dispatch<React.SetStateAction<PermissionMode>>;
   setClaudePermissionMode: React.Dispatch<React.SetStateAction<PermissionMode>>;
+  setCodexPermissionMode: React.Dispatch<React.SetStateAction<PermissionMode>>;
   setSelectedClaudeModel: React.Dispatch<React.SetStateAction<string>>;
   setSelectedCodexModel: React.Dispatch<React.SetStateAction<string>>;
   setProviderConfigVersion: React.Dispatch<React.SetStateAction<number>>;
@@ -113,6 +115,7 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
   const {
     t,
     addToast,
+    clearToasts,
     setMessages,
     setStatus,
     setLoading,
@@ -127,6 +130,7 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
     setUsageMaxTokens,
     setPermissionMode,
     setClaudePermissionMode,
+    setCodexPermissionMode,
     setSelectedClaudeModel,
     setSelectedCodexModel,
     setProviderConfigVersion,
@@ -179,6 +183,45 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
   useEffect(() => {
     tRef.current = t;
   }, [t]);
+
+  const resetTransientUiState = () => {
+    clearToasts();
+    setStatus('');
+    setLoading(false);
+    setLoadingStartTime(null);
+    setIsThinking(false);
+    setStreamingActive(false);
+    isStreamingRef.current = false;
+    useBackendStreamingRenderRef.current = false;
+    streamingMessageIndexRef.current = -1;
+    streamingContentRef.current = '';
+    streamingTextSegmentsRef.current = [];
+    activeTextSegmentIndexRef.current = -1;
+    streamingThinkingSegmentsRef.current = [];
+    activeThinkingSegmentIndexRef.current = -1;
+    seenToolUseCountRef.current = 0;
+    autoExpandedThinkingKeysRef.current.clear();
+    if (contentUpdateTimeoutRef.current) {
+      clearTimeout(contentUpdateTimeoutRef.current);
+      contentUpdateTimeoutRef.current = null;
+    }
+    if (thinkingUpdateTimeoutRef.current) {
+      clearTimeout(thinkingUpdateTimeoutRef.current);
+      thinkingUpdateTimeoutRef.current = null;
+    }
+  };
+
+  const releaseSessionTransition = () => {
+    if (window.__sessionTransitioning) {
+      window.__sessionTransitioning = false;
+    }
+    window.__sessionTransitionToken = null;
+  };
+
+  // Expose as single entry point for session transition cleanup.
+  // beginSessionTransition (useSessionManagement) calls this to synchronously
+  // clear both React state AND internal refs in one shot.
+  (window as any).__resetTransientUiState = resetTransientUiState;
 
   useEffect(() => {
     const getRawUuid = (msg: ClaudeMessage | undefined): string | undefined => {
@@ -275,6 +318,37 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
       return copy;
     };
 
+    const preserveStreamingAssistantContent = (prevList: ClaudeMessage[], nextList: ClaudeMessage[]): ClaudeMessage[] => {
+      if (!isStreamingRef.current) return nextList;
+
+      const prevAssistantIdx = findLastAssistantIndex(prevList);
+      const nextAssistantIdx = findLastAssistantIndex(nextList);
+      if (prevAssistantIdx < 0 || nextAssistantIdx < 0) return nextList;
+
+      const prevAssistant = prevList[prevAssistantIdx];
+      const nextAssistant = nextList[nextAssistantIdx];
+      if (prevAssistant.type !== 'assistant' || nextAssistant.type !== 'assistant') {
+        return nextList;
+      }
+
+      const previousContent = prevAssistant.content || '';
+      const bufferedContent = streamingContentRef.current || '';
+      const preferredContent = bufferedContent.length > previousContent.length ? bufferedContent : previousContent;
+      const nextContent = nextAssistant.content || '';
+
+      if (!preferredContent || preferredContent.length <= nextContent.length) {
+        return nextList;
+      }
+
+      const copy = [...nextList];
+      copy[nextAssistantIdx] = patchAssistantForStreaming({
+        ...nextAssistant,
+        content: preferredContent,
+        isStreaming: true,
+      });
+      return copy;
+    };
+
     // ========== Message Callbacks ==========
     window.updateMessages = (json) => {
       // During session transition, ignore message updates from stale session callbacks to prevent cleared messages from being restored
@@ -303,6 +377,7 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
               });
 
               smartMerged = preserveLastAssistantIdentity(prev, smartMerged);
+              smartMerged = preserveStreamingAssistantContent(prev, smartMerged);
               const result = appendOptimisticMessageIfMissing(prev, smartMerged);
 
               // FIX: In Claude mode, update streamingMessageIndexRef so that
@@ -394,6 +469,7 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
           let patched = [...parsed];
           patched = appendOptimisticMessageIfMissing(prev, patched);
           patched = preserveLastAssistantIdentity(prev, patched);
+          patched = preserveStreamingAssistantContent(prev, patched);
 
           const patchedAssistantIdx = findLastAssistantIndex(patched);
           if (patchedAssistantIdx >= 0 && patched[patchedAssistantIdx]?.type === 'assistant') {
@@ -409,10 +485,9 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
     };
 
     window.updateStatus = (text) => {
-      // Backend sends updateStatus after creating a new session; clear the message update suppression flag
-      if (window.__sessionTransitioning) {
-        window.__sessionTransitioning = false;
-      }
+      // Do not release the transition guard from generic status updates.
+      // Only explicit session-bound callbacks such as historyLoadComplete/setSessionId
+      // are allowed to finish the active transition generation.
       setStatus(text);
       if (suppressNextStatusToastRef.current) {
         suppressNextStatusToastRef.current = false;
@@ -453,9 +528,12 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
     window.setHistoryData = (data) => setHistoryData(data);
     window.clearMessages = () => {
       window.__deniedToolIds?.clear();
+      resetTransientUiState();
       setMessages([]);
     };
-    window.addErrorMessage = (message) => addToast(message, 'error');
+    window.addErrorMessage = (message) => {
+      addToast(message, 'error');
+    };
 
     window.addHistoryMessage = (message: ClaudeMessage) => {
       setMessages((prev) => [...prev, message]);
@@ -464,6 +542,7 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
     // History load complete callback — triggers Markdown re-rendering
     // to fix the issue where Markdown doesn't render on first history load.
     window.historyLoadComplete = () => {
+      releaseSessionTransition();
       // Trigger a component re-render by updating the last message reference (avoids O(n) shallow copy)
       setMessages((prev) => {
         if (prev.length === 0) return prev;
@@ -492,6 +571,7 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
 
     // ========== Streaming Callbacks ==========
     window.onStreamStart = () => {
+      if (window.__sessionTransitioning) return;
       streamingContentRef.current = '';
       isStreamingRef.current = true;
       useBackendStreamingRenderRef.current = false;
@@ -526,6 +606,7 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
     };
 
     window.onContentDelta = (delta: string) => {
+      if (window.__sessionTransitioning) return;
       if (!isStreamingRef.current) return;
       streamingContentRef.current += delta;
       activeThinkingSegmentIndexRef.current = -1;
@@ -584,6 +665,7 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
     };
 
     window.onThinkingDelta = (delta: string) => {
+      if (window.__sessionTransitioning) return;
       if (!isStreamingRef.current) return;
       activeTextSegmentIndexRef.current = -1;
 
@@ -641,6 +723,7 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
     };
 
     window.onStreamEnd = () => {
+      if (window.__sessionTransitioning) return;
       // Notify backend about stream completion for tab status indicator
       sendBridgeEvent('tab_status_changed', JSON.stringify({ status: 'completed' }));
 
@@ -766,6 +849,7 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
     // ========== Session Callbacks ==========
     window.setSessionId = (sessionId: string) => {
       const oldId = currentSessionIdRef.current;
+      releaseSessionTransition();
       setCurrentSessionId(sessionId);
 
       // B-011 + B-014: Persist custom title under the real SDK session ID.
@@ -865,13 +949,16 @@ export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
 
     const updateMode = (mode?: PermissionMode, providerOverride?: string) => {
       const activeProvider = providerOverride || currentProviderRef.current;
-      if (activeProvider === 'codex') {
-        setPermissionMode((prev) => (prev === 'bypassPermissions' ? prev : 'bypassPermissions'));
-        return;
-      }
       if (isValidPermissionMode(mode)) {
-        setPermissionMode((prev) => (prev === mode ? prev : mode));
-        setClaudePermissionMode((prev) => (prev === mode ? prev : mode));
+        const nextMode: PermissionMode = activeProvider === 'codex' && mode === 'plan'
+          ? 'default'
+          : mode;
+        setPermissionMode((prev) => (prev === nextMode ? prev : nextMode));
+        if (activeProvider === 'codex') {
+          setCodexPermissionMode((prev) => (prev === nextMode ? prev : nextMode));
+        } else {
+          setClaudePermissionMode((prev) => (prev === nextMode ? prev : nextMode));
+        }
       }
     };
 

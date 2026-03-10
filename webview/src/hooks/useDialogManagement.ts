@@ -97,6 +97,19 @@ export function useDialogManagement({ t }: UseDialogManagementOptions): UseDialo
 
   // Open permission dialog
   const openPermissionDialog = useCallback((request: PermissionRequest) => {
+    // If a permission dialog is currently open, enqueue the new request instead of overriding.
+    // This avoids losing follow-up requests when the user denies the current one.
+    if (permissionDialogOpenRef.current || currentPermissionRequestRef.current) {
+      const currentId = currentPermissionRequestRef.current?.channelId;
+      const alreadyQueued = pendingPermissionRequestsRef.current.some(
+        (item) => item.channelId === request.channelId
+      );
+      if (request.channelId !== currentId && !alreadyQueued) {
+        pendingPermissionRequestsRef.current.push(request);
+      }
+      return;
+    }
+
     currentPermissionRequestRef.current = request;
     permissionDialogOpenRef.current = true;
     setCurrentPermissionRequest(request);
@@ -158,6 +171,9 @@ export function useDialogManagement({ t }: UseDialogManagementOptions): UseDialo
       rejectMessage: null,
     });
     sendBridgeEvent('permission_decision', payload);
+    pendingPermissionRequestsRef.current = pendingPermissionRequestsRef.current.filter(
+      (item) => item.channelId !== channelId
+    );
     permissionDialogOpenRef.current = false;
     currentPermissionRequestRef.current = null;
     setPermissionDialogOpen(false);
@@ -172,6 +188,9 @@ export function useDialogManagement({ t }: UseDialogManagementOptions): UseDialo
       rejectMessage: null,
     });
     sendBridgeEvent('permission_decision', payload);
+    pendingPermissionRequestsRef.current = pendingPermissionRequestsRef.current.filter(
+      (item) => item.channelId !== channelId
+    );
     permissionDialogOpenRef.current = false;
     currentPermissionRequestRef.current = null;
     setPermissionDialogOpen(false);
@@ -186,6 +205,9 @@ export function useDialogManagement({ t }: UseDialogManagementOptions): UseDialo
       rejectMessage: t('permission.userDenied'),
     });
     sendBridgeEvent('permission_decision', payload);
+    pendingPermissionRequestsRef.current = pendingPermissionRequestsRef.current.filter(
+      (item) => item.channelId !== channelId
+    );
     permissionDialogOpenRef.current = false;
     currentPermissionRequestRef.current = null;
     setPermissionDialogOpen(false);

@@ -1,14 +1,61 @@
-#!/usr/bin/env node
-
 /**
  * Permission Handler.
  * Provides interactive permission request handling for Claude SDK.
+ *
+ * Tool categories (matching CLI definitions):
+ * - READ_ONLY_TOOLS: Auto-allowed in all modes (no side effects)
+ * - EDIT_TOOLS: Auto-allowed in acceptEdits mode
+ * - EXECUTION_TOOLS: Always require permission (except bypassPermissions)
  */
 
 import { writeFileSync, readFileSync, existsSync, unlinkSync, readdirSync } from 'fs';
 import { join, basename, resolve, sep } from 'path';
 import { tmpdir } from 'os';
 import { getRealHomeDir } from './utils/path-utils.js';
+
+// ========== Tool categories for permission control ==========
+
+// READ_ONLY tools: auto-allowed in plan mode and default mode (no side effects)
+export const READ_ONLY_TOOLS = new Set([
+  'Glob',           // Find files by pattern
+  'Grep',           // Search file contents
+  'Read',           // Read files/images/PDFs
+  'WebFetch',       // Fetch URL content
+  'WebSearch',      // Search the web
+  'TodoWrite',      // Manage task checklist
+  'TaskStop',       // Stop background task
+  'TaskOutput',     // Read task output
+  'ListMcpResourcesTool',   // List MCP resources
+  'ReadMcpResourceTool',    // Read MCP resource
+  'ExitPlanMode',   // Exit plan mode (triggers approval dialog)
+]);
+
+// AUTO_ALLOW_TOOLS: Tools that are always allowed without prompting
+export const AUTO_ALLOW_TOOLS = new Set([
+  'ToolSearch',       // Search/select deferred tools
+  'StructuredOutput', // Return structured JSON output
+  'EnterPlanMode',    // Enter planning mode
+  'EnterWorktree',    // Create isolated git worktree
+  'TaskCreate',       // Create a task in task list
+  'TaskGet',          // Get a task by ID
+  'TaskUpdate',       // Update a task
+  'TaskList',         // List all tasks
+  'CronCreate',       // Schedule a recurring prompt
+  'CronDelete',       // Cancel a scheduled cron job
+  'CronList',         // List active cron jobs
+]);
+
+// EDIT tools: auto-allowed in acceptEdits mode
+export const EDIT_TOOLS = new Set([
+  'Edit',           // Modify file contents
+  'Write',          // Create/overwrite files
+  'NotebookEdit',   // Edit Jupyter notebook cells
+]);
+
+// EXECUTION tools: always require permission (except bypassPermissions mode)
+export const EXECUTION_TOOLS = new Set([
+  'Bash',           // Execute shell commands
+]);
 
 // ========== Debug logging helpers ==========
 function debugLog(tag, message, data = null) {
@@ -557,10 +604,10 @@ export async function canUseTool(toolName, input, options = {}) {
     };
   }
 
-  // Certain tools can be auto-allowed (read-only operations)
-  const autoAllowedTools = ['Read', 'Glob', 'Grep'];
-  if (autoAllowedTools.includes(toolName)) {
-    debugLog('AUTO_ALLOW', `Auto-allowing read-only tool: ${toolName}`);
+  // READ_ONLY tools and AUTO_ALLOW_TOOLS can be auto-allowed (no side effects)
+  // This is used as a fallback when the PreToolUse hook doesn't handle the tool
+  if (READ_ONLY_TOOLS.has(toolName) || AUTO_ALLOW_TOOLS.has(toolName)) {
+    debugLog('AUTO_ALLOW', `Auto-allowing tool: ${toolName}`);
     return {
       behavior: 'allow',
       updatedInput: input

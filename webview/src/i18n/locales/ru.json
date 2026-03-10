@@ -321,6 +321,7 @@
       "emptyProvider": "Провайдер не настроен",
       "notConfigured": "Не настроено",
       "apiKey": "API-ключ",
+      "apiKeyHelper": "Помощник API-ключа",
       "baseUrl": "Base URL",
       "provider": "Провайдер",
       "source": "Источник",
@@ -360,6 +361,49 @@
       "localProviderName": "Локальный settings.json",
       "localProviderDescription": "Использовать конфигурацию напрямую из ~/.claude/settings.json",
       "localProviderHelp": "В режиме локального провайдера:\n• Плагин не будет изменять ваш файл ~/.claude/settings.json\n• Вам нужно управлять конфигурацией вручную\n• Убедитесь, что файл существует и содержит валидный JSON\n• Подходит для опытных пользователей, предпочитающих ручное управление",
+      "subscriptionTutorial": {
+        "entry": "Руководство по подписке",
+        "dialogTitle": "Как использовать аккаунт подписки",
+        "tabAriaLabel": "Вкладки руководства по подписке",
+        "tabs": {
+          "claude": "Подписка Claude",
+          "codex": "Подписка Codex"
+        },
+        "code": {
+          "copy": "Скопировать код",
+          "copied": "Скопировано"
+        },
+        "providers": {
+          "claude": {
+            "title": "Как использовать аккаунт подписки Claude Code",
+            "item1": "Войдите в аккаунт подписки Claude Code через CLI в терминале, затем вы сможете нормально общаться в терминале",
+            "item2": "Убедитесь, что файл ~/.claude/settings.json и файл .env пусты",
+            "item3": "Перезапустите IDEA, и вы сможете нормально общаться",
+            "emptyConfigCodeLabel": "~/.claude/settings.json",
+            "emptyConfigCode": "{\n  \"env\": {\n  }\n}",
+            "noteTitle": "Примечания к особым случаям:",
+            "note1": "Если вы выполнили вышеуказанные шаги, но плагин всё ещё не отвечает, попробуйте установить ~/.claude/settings.json .env в:",
+            "proxyConfigCodeLabel": "~/.claude/settings.json",
+            "proxyConfigCode": "{\n  \"env\": {\n    \"HTTP_PROXY\": \"http://127.0.0.1:7897\",\n    \"HTTPS_PROXY\": \"http://127.0.0.1:7897\"\n  }\n}",
+            "issuePrefix": "Если это всё ещё не работает, сообщите о проблеме на GitHub: ",
+            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+          },
+          "codex": {
+            "title": "Настройка аккаунта подписки Codex",
+            "item1": "Запустите codex login в терминале Codex CLI и войдите в систему, затем вы сможете общаться в терминале",
+            "item2": "Перезапустите IDEA",
+            "item3": "Теперь вы можете нормально общаться",
+            "emptyConfigCodeLabel": "",
+            "emptyConfigCode": "",
+            "noteTitle": "",
+            "note1": "",
+            "proxyConfigCodeLabel": "",
+            "proxyConfigCode": "",
+            "issuePrefix": "Если это всё ещё не работает, сообщите о проблеме на GitHub: ",
+            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+          }
+        }
+      },
       "importDialog": {
         "title": "Импорт конфигурации cc-switch",
         "summary": "Найдено {{total}} конфигураций, в том числе",
@@ -1102,9 +1146,9 @@
         "label": "gpt-5.3-codex",
         "description": "Новейшая агентная модель для кодинга с улучшенными возможностями."
       },
-      "gpt53": {
-        "label": "gpt-5.3",
-        "description": "Новейшая модель со значительными улучшениями."
+      "gpt54": {
+        "label": "gpt-5.4",
+        "description": "Новейшая модель с расширенными возможностями."
       },
       "gpt52codex": {
         "label": "gpt-5.2-codex",
@@ -1117,10 +1161,6 @@
       "gpt51codexMini": {
         "label": "gpt-5.1-codex-mini",
         "description": "Оптимизирована для Codex. Дешевле, быстрее, но менее мощная."
-      },
-      "gpt52": {
-        "label": "gpt-5.2",
-        "description": "Новейшая модель с улучшениями знаний."
       }
     }
   },
@@ -1159,7 +1199,7 @@
     },
     "acceptEdits": {
       "label": "Авто-правки",
-      "tooltip": "Codex approval_policy=auto-edit — автоматически применяет патчи файлов, но запрашивает перед командами.",
+      "tooltip": "Codex approval_policy=on-request – asks for approval when needed",
       "description": "Автоматическое создание и редактирование файлов через apply_patch с сохранением одобрения команд."
     },
     "bypassPermissions": {

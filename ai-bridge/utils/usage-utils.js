@@ -30,15 +30,14 @@ export function mergeUsage(accumulated, newUsage) {
 
 /**
  * Emit [USAGE] tag from accumulated usage data during streaming.
- * NOTE: The console.log below is intentional IPC — the Java backend parses
- * stdout lines starting with "[USAGE]" to extract token metrics.
+ * NOTE: Uses process.stdout.write for consistent buffering with other IPC messages.
  */
 export function emitAccumulatedUsage(accumulated) {
   if (!accumulated) return;
-  console.log('[USAGE]', JSON.stringify({
+  process.stdout.write('[USAGE] ' + JSON.stringify({
     input_tokens: accumulated.input_tokens || 0,
     output_tokens: accumulated.output_tokens || 0,
     cache_creation_input_tokens: accumulated.cache_creation_input_tokens || 0,
     cache_read_input_tokens: accumulated.cache_read_input_tokens || 0
-  }));
+  }) + '\n');
 }

@@ -13,6 +13,114 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.2.7',
+    date: '2026-03-10',
+    content: {
+      en: `✨ Features
+- Project-level prompt storage: dual-scope prompt management (global + project), store project prompts in for team sharing via Git, separate UI sections with full CRUD, chat autocomplete with scope labels (#598) #hpstream
+- Codex mode enhancements: suggest (approval) mode, per-conversation permission isolation, separate Codex/Claude Code config UI, agent config and diff editor panel in Codex mode (#571) #tonyshengbo
+- Improve Codex tool rendering with smart classification and file navigation (#607) #gadfly3173
+- Add AUTO_ALLOW_TOOLS category and improve plan mode permissions (#609) #gadfly3173
+- Add Agent tool alias for Task in plan mode (#615) #gadfly3173
+- Add provider sorting functionality with drag-and-drop reorder (#617) #fanchenggang
+- Add apiKeyHelper support for enterprise authentication (#623) #bdelamarre
+- Update Codex model list: add gpt-5.4, remove gpt-5.2/gpt-5.3
+
+🐛 Fixes
+- Fix Codex stdio MCP server status stays on pending: add handshake request (#499) #pwang1984
+- Fix Windows sound path issue for completion notification (#553) #z231485
+- Prepend configured Node.js path to ensure version priority (#587) #gadfly3173
+- Resolve session transition races, streaming stability, and error deduplication (#600) #gadfly3173
+- Enhance SDK update and version handling (#602) #gadfly3173
+- Add runtime session epoch isolation to prevent ghost messages (#611) #gadfly3173
+- Fix context menu cut function and enhance file tag handling (#625) #JackCmd233
+- Enforce UTF-8 charset for all file I/O operations
+- Replace experimental IntelliJ APIs with stable alternatives
+- Harden Codex path resolution and improve sandbox defaults
+
+🔧 Improvements
+- Refactor PromptManager to AbstractPromptManager with template methods, GlobalPromptManager, ProjectPromptManager, PromptManagerFactory (#598) #hpstream
+- Extract shared provider sorting logic to reduce duplication
+- Extract shared command tool names and improve parsing robustness
+- Extract apiKeyHelper detection and add missing i18n keys
+- Replace hardcoded VSCode variables with design tokens in dialogs
+- Improve code quality with thread safety, defensive copying, and log cleanup`,
+      zh: `✨ Features
+- 项目级别提示词存储：双作用域提示词管理（全局 + 项目），项目提示词存储在 文件中可通过 Git 团队共享，全局和项目提示词分区展示并支持完整增删改查，聊天自动补全带作用域标签 (#598) #hpstream
+- Codex 模式增强：支持 suggest（审批）模式、会话级独立权限审批、拆分 Codex 和 Claude Code 配置界面、Codex 模式下智能体配置和 diff 编辑面板 (#571) #tonyshengbo
+- 改进 Codex 工具渲染：智能分类和文件导航 (#607) #gadfly3173
+- 新增 AUTO_ALLOW_TOOLS 类别并改进 Plan 模式权限 (#609) #gadfly3173
+- Plan 模式支持 Agent 工具作为 Task 的别名 (#615) #gadfly3173
+- 新增 Provider 排序功能：支持拖拽排序 (#617) #fanchenggang
+- 新增 apiKeyHelper 企业认证支持 (#623) #bdelamarre
+- 更新 Codex 模型列表：新增 gpt-5.4，移除 gpt-5.2/gpt-5.3
+
+🐛 Fixes
+- 修复 Codex stdio MCP 服务器状态持续 pending 问题 (#499) #pwang1984
+- 修复 Windows 平台设置完成语音路径问题 (#553) #z231485
+- 修复配置的 Node.js 路径优先级 (#587) #gadfly3173
+- 修复会话切换竞态、流式稳定性和错误去重 (#600) #gadfly3173
+- 增强 SDK 更新和版本处理 (#602) #gadfly3173
+- 新增运行时会话 epoch 隔离以防止幽灵消息 (#611) #gadfly3173
+- 修复上下文菜单剪切功能并增强文件标签处理 (#625) #JackCmd233
+- 强制所有文件 I/O 操作使用 UTF-8 编码
+- 替换实验性 IntelliJ API 为稳定替代方案
+- 加固 Codex 路径解析并改进沙箱默认值
+
+🔧 Improvements
+- 重构 PromptManager 为 AbstractPromptManager 抽象基类 (#598) #hpstream
+- 提取共享的 Provider 排序逻辑以减少重复代码
+- 提取共享命令工具名称并改进解析健壮性
+- 提取 apiKeyHelper 检测逻辑并补充缺失的 i18n 键
+- 将对话框中硬编码的 VSCode 变量替换为设计令牌
+- 改进代码质量：线程安全、防御性拷贝和日志清理`,
+    },
+  },
+  {
+    version: '0.2.6',
+    date: '2026-03-05',
+    content: {
+      en: `✨ Features
+- Support pasting clipboard images in chat input: convert clipboard image data to base64 PNG, dispatch to webview and add as attachment
+- Add subscription tutorial dialog for Claude and Codex providers: tabbed step-by-step instructions with code block copy, i18n for 8 languages
+- Align slash command scanning with CLI behavior: plugin namespace prefixing, recursive directory scanning with SKILL.md detection, marketplace manifest fallback (#579) #gadfly3173
+- Add configurable "play sound only when IDE unfocused" setting (#583) #PaulGiletich
+
+🐛 Fixes
+- Gate Write tool with permission check in plan mode: add Write to permission check branch, add findProjectByPath fallback and retry logic (#580) #gadfly3173
+- Align token usage display with CLI behavior: reset per-turn accumulator on message_start, emit final usage before STREAM_END, show token info in status bar (#578) #gadfly3173
+- Fix token usage display in streaming and non-streaming modes: fix EDT violation, avoid duplicate updates, add monotonic increase check
+- Offload MCP server I/O to background threads: CompletableFuture.runAsync, 5-second timeout for command availability check
+- Harden plugin command scanning with depth limit and path safety
+- Address code review issues: GSON encoding for base64 JS injection prevention, fix i18n condition checks, replace hardcoded colors with theme variables
+- Normalize sound config response format and replace inline style with CSS Module class
+
+🔧 Improvements
+- Refactor tool block collapse UI: all tools with params collapsible, chevron icon with CSS accordion animation
+- Add CSS variables for notice-box colors with dark/light theme support, responsive layout for usage tabs
+- Fix CSS class naming collision in usage stats, change default date range from 30d to 7d`,
+      zh: `✨ Features
+- 支持在聊天输入框粘贴剪贴板图片：剪贴板图片数据转换为 base64 PNG，分发到 webview 作为附件
+- 新增 Claude 和 Codex 订阅教程对话框：分标签页操作说明，代码块复制，8 种语言国际化
+- 对齐斜杠命令扫描与 CLI 行为：插件命名空间前缀、递归目录扫描支持 SKILL.md 检测、市场清单回退 (#579) #gadfly3173
+- 新增 "仅在 IDE 失焦时播放提示音" 配置项 (#583) #PaulGiletich
+
+🐛 Fixes
+- 修复 Plan 模式下 Write 工具权限检查：将 Write 加入权限检查分支，添加 findProjectByPath 回退和重试逻辑 (#580) #gadfly3173
+- 修复 Token 用量显示对齐 CLI 行为：message_start 时重置累计器，STREAM_END 前发送最终用量，状态栏显示 Token 信息 (#578) #gadfly3173
+- 修复流式和非流式模式下 Token 用量显示：修复 EDT 线程违规，避免重复更新，添加单调递增检查
+- MCP 服务器 I/O 操作移至后台线程：CompletableFuture.runAsync，命令检查添加 5 秒超时
+- 加固插件命令扫描安全：深度限制和路径安全防护
+- 修复代码审查中安全和质量问题：GSON 编码防 JS 注入，修复 i18n 条件检查，硬编码颜色替换为主题变量
+- 规范化声音配置响应格式，内联样式替换为 CSS Module 类
+
+🔧 Improvements
+- 重构工具块折叠 UI：所有含参数的工具可折叠，箭头图标和 CSS 手风琴动画
+- 为 notice-box 颜色添加 CSS 变量，支持深色/浅色主题，窄视口响应式布局
+- 修复使用统计 CSS 类名冲突，默认日期范围从 30 天改为 7 天`,
+    },
+  },
+  {
     version: '0.2.5',
     date: '2026-03-04',
     content: {

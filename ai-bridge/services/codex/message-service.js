@@ -17,9 +17,11 @@
 import { loadCodexSdk, isCodexSdkAvailable } from '../../utils/sdk-loader.js';
 import { CodexPermissionMapper } from '../../utils/permission-mapper.js';
 import { randomUUID } from 'crypto';
-import { existsSync, readFileSync, statSync } from 'fs';
-import { join, dirname } from 'path';
+import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { join, dirname, resolve, sep } from 'path';
 import { getRealHomeDir } from '../../utils/path-utils.js';
+import { getMcpServerTools as getMcpServerToolsImpl } from '../claude/mcp-status/index.js';
+import { requestPermissionFromJava } from '../../permission-handler.js';
 
 // SDK cache
 let codexSdk = null;
@@ -41,11 +43,95 @@ function debugLog(level, tag, ...args) {
 }
 
 // Convenience functions for different log levels
-const logError = (tag, ...args) => debugLog(1, tag, ...args);
 const logWarn = (tag, ...args) => debugLog(2, tag, ...args);
 const logInfo = (tag, ...args) => debugLog(3, tag, ...args);
 const logDebug = (tag, ...args) => debugLog(4, tag, ...args);
-const logVerbose = (tag, ...args) => debugLog(5, tag, ...args);
+const VALID_SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
+const VALID_APPROVAL_POLICIES = new Set(['never', 'on-request', 'on-failure', 'untrusted']);
+const CODEX_CLI_ENV_BLOCKLIST = new Set([
+  'CODEX_APPROVAL_POLICY',
+  'CODEX_SANDBOX_MODE',
+  'CODEX_SANDBOX',
+  'CODEX_SANDBOX_NETWORK_DISABLED',
+  'CODEX_CI'
+]);
+
+/**
+ * Reads sandbox mode override from environment variables.
+ * Returns an empty string when no override should be applied.
+ */
+function resolveSandboxModeOverride() {
+  const value = (process.env.CODEX_SANDBOX_MODE || '').trim();
+  if (!value) {
+    return '';
+  }
+  if (!VALID_SANDBOX_MODES.has(value)) {
+    logWarn('PERM_DEBUG', `Ignore invalid CODEX_SANDBOX_MODE: ${value}`);
+    return '';
+  }
+  return value;
+}
+
+/**
+ * Reads approval policy override from environment variables.
+ * Returns an empty string when no override should be applied.
+ */
+function resolveApprovalPolicyOverride() {
+  const value = (process.env.CODEX_APPROVAL_POLICY || '').trim();
+  if (!value) {
+    return '';
+  }
+  if (!VALID_APPROVAL_POLICIES.has(value)) {
+    logWarn('PERM_DEBUG', `Ignore invalid CODEX_APPROVAL_POLICY: ${value}`);
+    return '';
+  }
+  return value;
+}
+
+/**
+ * Builds a sanitized environment map for Codex CLI to avoid inherited
+ * polluted variables that can break approval policy behavior.
+ */
+function buildCodexCliEnvironment(baseEnv) {
+  const cliEnv = {};
+  const removedKeys = [];
+
+  if (!baseEnv || typeof baseEnv !== 'object') {
+    return { cliEnv, removedKeys };
+  }
+
+  for (const [key, rawValue] of Object.entries(baseEnv)) {
+    if (typeof rawValue !== 'string' || rawValue.length === 0) {
+      continue;
+    }
+    if (CODEX_CLI_ENV_BLOCKLIST.has(key)) {
+      removedKeys.push(key);
+      continue;
+    }
+    cliEnv[key] = rawValue;
+  }
+
+  return { cliEnv, removedKeys };
+}
+
+function normalizeCodexPermissionMode(mode) {
+  if (typeof mode !== 'string') {
+    return 'default';
+  }
+  const trimmed = mode.trim();
+  if (!trimmed) {
+    return 'default';
+  }
+  if (trimmed === 'autoEdit') {
+    return 'acceptEdits';
+  }
+  return trimmed;
+}
+
+function isAutoEditPermissionMode(mode) {
+  const normalized = normalizeCodexPermissionMode(mode);
+  return normalized === 'acceptEdits';
+}
 
 const isReconnectNotice = (message) =>
   typeof message === 'string' && /Reconnecting\.\.\./i.test(message);
@@ -79,12 +165,268 @@ async function ensureCodexSdk() {
 }
 
 const MAX_TOOL_RESULT_CHARS = 20000;
+const RAW_EVENT_LOG_MAX_CHARS = 12000;
 
 // AGENTS.md max read size in bytes (32KB, consistent with Codex CLI)
 const MAX_AGENTS_MD_BYTES = 32 * 1024;
 
 // AGENTS.md filename search order
 const AGENTS_FILE_NAMES = ['AGENTS.override.md', 'AGENTS.md', 'CLAUDE.md'];
+const SESSION_PATCH_SCAN_MAX_LINES = 2000;
+const SESSION_PATCH_SCAN_MAX_FILES = 5000;
+const SESSION_CONTEXT_SCAN_MAX_LINES = 1200;
+
+/**
+ * Extracts apply_patch text from exec_command arguments.
+ */
+function extractPatchFromExecCommand(cmd) {
+  if (typeof cmd !== 'string' || !cmd) {
+    return '';
+  }
+  const begin = cmd.indexOf('*** Begin Patch');
+  const end = cmd.lastIndexOf('*** End Patch');
+  if (begin < 0 || end < begin) {
+    return '';
+  }
+  return cmd.slice(begin, end + '*** End Patch'.length);
+}
+
+/**
+ * Extracts patch text from a response_item payload.
+ * Supports function_call(exec_command/apply_patch) and custom_tool_call(apply_patch).
+ */
+function extractPatchFromResponseItemPayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return '';
+  }
+
+  const payloadType = payload.type;
+  const name = payload.name;
+
+  if (payloadType === 'custom_tool_call' && name === 'apply_patch') {
+    if (typeof payload.input === 'string') {
+      return payload.input;
+    }
+    if (payload.input && typeof payload.input === 'object') {
+      const patch = payload.input.patch ?? payload.input.input;
+      return typeof patch === 'string' ? patch : '';
+    }
+    return '';
+  }
+
+  if (payloadType !== 'function_call') {
+    return '';
+  }
+
+  if (name === 'apply_patch') {
+    if (typeof payload.arguments === 'string') {
+      try {
+        const args = JSON.parse(payload.arguments);
+        const patch = args?.patch ?? args?.input;
+        return typeof patch === 'string' ? patch : '';
+      } catch {
+        return '';
+      }
+    }
+    return '';
+  }
+
+  if (name !== 'exec_command' || typeof payload.arguments !== 'string') {
+    return '';
+  }
+
+  try {
+    const args = JSON.parse(payload.arguments);
+    return extractPatchFromExecCommand(args?.cmd);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Parses apply_patch text into reusable edit operations.
+ */
+function parseApplyPatchToOperations(patchText) {
+  if (typeof patchText !== 'string' || !patchText.trim()) {
+    return [];
+  }
+
+  const lines = patchText.split('\n');
+  const operations = [];
+
+  let currentPath = null;
+  let currentKind = null; // add | update | delete
+  let oldLines = [];
+  let newLines = [];
+  let addFileLines = [];
+
+  const flushUpdate = () => {
+    if (!currentPath || currentKind !== 'update') return;
+    const oldString = oldLines.join('\n');
+    const newString = newLines.join('\n');
+    if (oldString === newString) return;
+    operations.push({
+      filePath: currentPath,
+      kind: currentKind,
+      oldString,
+      newString,
+      toolName: 'edit'
+    });
+  };
+
+  const flushAdd = () => {
+    if (!currentPath || currentKind !== 'add') return;
+    operations.push({
+      filePath: currentPath,
+      kind: currentKind,
+      oldString: '',
+      newString: addFileLines.join('\n'),
+      toolName: 'write'
+    });
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine ?? '';
+
+    if (line.startsWith('*** Update File: ')) {
+      flushUpdate();
+      flushAdd();
+      currentPath = line.slice('*** Update File: '.length).trim();
+      currentKind = 'update';
+      oldLines = [];
+      newLines = [];
+      addFileLines = [];
+      continue;
+    }
+
+    if (line.startsWith('*** Add File: ')) {
+      flushUpdate();
+      flushAdd();
+      currentPath = line.slice('*** Add File: '.length).trim();
+      currentKind = 'add';
+      oldLines = [];
+      newLines = [];
+      addFileLines = [];
+      continue;
+    }
+
+    if (line.startsWith('*** Delete File: ')) {
+      flushUpdate();
+      flushAdd();
+      currentPath = line.slice('*** Delete File: '.length).trim();
+      currentKind = 'delete';
+      oldLines = [];
+      newLines = [];
+      addFileLines = [];
+      continue;
+    }
+
+    if (line.startsWith('*** Move to: ')) {
+      const movedPath = line.slice('*** Move to: '.length).trim();
+      if (movedPath) {
+        currentPath = movedPath;
+      }
+      continue;
+    }
+
+    if (line.startsWith('*** End Patch')) {
+      flushUpdate();
+      flushAdd();
+      currentPath = null;
+      currentKind = null;
+      oldLines = [];
+      newLines = [];
+      addFileLines = [];
+      continue;
+    }
+
+    if (!currentPath || !currentKind) {
+      continue;
+    }
+
+    if (currentKind === 'delete') {
+      continue;
+    }
+
+    if (currentKind === 'add') {
+      if (line.startsWith('+')) {
+        addFileLines.push(line.slice(1));
+      }
+      continue;
+    }
+
+    // update
+    if (line.startsWith('@@')) {
+      flushUpdate();
+      oldLines = [];
+      newLines = [];
+      continue;
+    }
+
+    if (line === '\\ No newline at end of file') {
+      continue;
+    }
+
+    if (line.startsWith('+')) {
+      newLines.push(line.slice(1));
+    } else if (line.startsWith('-')) {
+      oldLines.push(line.slice(1));
+    } else if (line.startsWith(' ')) {
+      const content = line.slice(1);
+      oldLines.push(content);
+      newLines.push(content);
+    }
+  }
+
+  flushUpdate();
+  flushAdd();
+
+  return operations;
+}
+
+/**
+ * Finds a session file containing the threadId under ~/.codex/sessions.
+ */
+function findSessionFileByThreadId(threadId) {
+  if (!threadId || typeof threadId !== 'string') {
+    return null;
+  }
+
+  const sessionsRoot = join(getRealHomeDir(), '.codex', 'sessions');
+  if (!existsSync(sessionsRoot)) {
+    return null;
+  }
+
+  const stack = [sessionsRoot];
+  let visited = 0;
+
+  while (stack.length > 0 && visited < SESSION_PATCH_SCAN_MAX_FILES) {
+    const current = stack.pop();
+    if (!current) continue;
+    visited += 1;
+
+    let entries = [];
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (entry.name.endsWith('.jsonl') && entry.name.includes(threadId)) {
+        return fullPath;
+      }
+    }
+  }
+
+  return null;
+}
 
 /**
  * Find the Git repository root directory.
@@ -256,10 +598,12 @@ export async function sendMessage(
   attachments = []
 ) {
   try {
+    const normalizedPermissionMode = normalizeCodexPermissionMode(permissionMode || 'default');
+
     console.log('[DEBUG] Codex sendMessage called with params:', {
       threadId,
       cwd,
-      permissionMode,
+      permissionMode: normalizedPermissionMode,
       model,
       reasoningEffort,
       hasBaseUrl: !!baseUrl,
@@ -289,17 +633,41 @@ export async function sendMessage(
       codexOptions.apiKey = apiKey;
     }
 
+    // Pass a sanitized env to the SDK to avoid inherited CODEX_* pollution
+    // (for example CODEX_CI=1) affecting CLI behavior.
+    const { cliEnv, removedKeys } = buildCodexCliEnvironment(process.env);
+    codexOptions.env = cliEnv;
+    logDebug('PERM_DEBUG', 'Codex CLI env isolation:', JSON.stringify({
+      removedKeys,
+      removedCount: removedKeys.length
+    }));
+
     const codex = new Codex(codexOptions);
 
     // ============================================================
     // 2. Map Unified Permission Mode to Codex Format
     // ============================================================
 
-    const permissionConfig = CodexPermissionMapper.toProvider(
-      permissionMode || 'default'
-    );
+    const permissionConfig = CodexPermissionMapper.toProvider(normalizedPermissionMode);
 
-    console.log('[PERM_DEBUG] Codex permission config:', permissionConfig);
+    logDebug('PERM_DEBUG', 'Codex permission config:', JSON.stringify(permissionConfig));
+    logDebug('PERM_DEBUG', 'Raw env permission overrides:', JSON.stringify({
+      CODEX_SANDBOX_MODE: process.env.CODEX_SANDBOX_MODE || '',
+      CODEX_APPROVAL_POLICY: process.env.CODEX_APPROVAL_POLICY || ''
+    }));
+
+    // Allow Java side to force sandbox mapping override via env vars so Node
+    // side mapping does not fall back to workspace-write again.
+    const sandboxOverride = resolveSandboxModeOverride();
+    if (sandboxOverride) {
+      permissionConfig.sandbox = sandboxOverride;
+      logDebug('PERM_DEBUG', 'Sandbox override from env CODEX_SANDBOX_MODE:', sandboxOverride);
+    }
+    const approvalPolicyOverride = resolveApprovalPolicyOverride();
+    if (approvalPolicyOverride) {
+      permissionConfig.approvalPolicy = approvalPolicyOverride;
+      logDebug('PERM_DEBUG', 'Approval override from env CODEX_APPROVAL_POLICY:', approvalPolicyOverride);
+    }
 
     // ============================================================
     // 3. Build Thread Options
@@ -348,12 +716,13 @@ export async function sendMessage(
     }
 
     // Final configuration log for debugging
-    console.log('[PERM_DEBUG] Final Codex threadOptions:', {
-      permissionMode: permissionMode,
+    logDebug('PERM_DEBUG', 'Final Codex threadOptions:', JSON.stringify({
+      permissionMode: normalizedPermissionMode,
+      workingDirectory: threadOptions.workingDirectory,
       sandboxMode: threadOptions.sandboxMode,
       approvalPolicy: threadOptions.approvalPolicy,
       skipGitRepoCheck: threadOptions.skipGitRepoCheck
-    });
+    }));
 
     // ============================================================
     // 4. Create or Resume Thread
@@ -414,15 +783,27 @@ export async function sendMessage(
       console.log('[DEBUG] Using string input format');
     }
 
-    const { events } = await thread.runStreamed(runInput);
+    const turnAbortController = new AbortController();
+    const { events } = await thread.runStreamed(runInput, {
+      signal: turnAbortController.signal
+    });
 
     let currentThreadId = threadId;
     let finalResponse = '';
     let assistantText = '';
     const pendingToolUseIdsByCommand = new Map();
     const emittedToolUseIds = new Set();
+    const processedPatchCallIds = new Set();
+    const deniedCommandToolUseIds = new Set();
+    const emittedDeniedCommandToolResultIds = new Set();
+    let currentSessionFilePath = null;
+    let sessionLineCursor = 0;
     const reasoningTextCache = new Map();
     let reasoningObserved = false;
+    let runtimePolicyLogged = false;
+    let commandApprovalAbortRequested = false;
+    const COMMAND_DENIED_ABORT_ERROR = '__CODEX_COMMAND_DENIED_ABORT__';
+    let suppressNoResponseFallback = false;
 
     const emitMessage = (msg) => {
       console.log('[MESSAGE]', JSON.stringify(msg));
@@ -487,6 +868,417 @@ export async function sendMessage(
       return id;
     };
 
+    const resolveFilePath = (filePath) => {
+      if (typeof filePath !== 'string' || !filePath.trim()) {
+        return '';
+      }
+      // Resolve to absolute path against the working directory
+      const resolved = filePath.startsWith('/')
+        ? resolve(filePath)
+        : (cwd && typeof cwd === 'string' && cwd.trim())
+          ? resolve(cwd, filePath)
+          : filePath;
+      // Guard against path traversal: resolved path must stay within cwd
+      if (cwd && typeof cwd === 'string' && cwd.trim()) {
+        const normalizedCwd = resolve(cwd);
+        const normalizedResolved = resolve(resolved);
+        if (normalizedResolved !== normalizedCwd && !normalizedResolved.startsWith(normalizedCwd + sep)) {
+          logWarn('PERM_DEBUG', `Path traversal blocked: ${filePath} resolved to ${normalizedResolved} (cwd=${normalizedCwd})`);
+          return '';
+        }
+      }
+      return resolved;
+    };
+
+    const ensureSessionFilePath = () => {
+      if (currentSessionFilePath && existsSync(currentSessionFilePath)) {
+        return currentSessionFilePath;
+      }
+      if (!currentThreadId) {
+        return null;
+      }
+      currentSessionFilePath = findSessionFileByThreadId(currentThreadId);
+      return currentSessionFilePath;
+    };
+
+    const readLatestTurnContextFromSession = () => {
+      const sessionPath = ensureSessionFilePath();
+      if (!sessionPath) {
+        return null;
+      }
+
+      let content = '';
+      try {
+        content = readFileSync(sessionPath, 'utf8');
+      } catch (error) {
+        logDebug('PERM_DEBUG', 'Failed to read session for turn_context:', error?.message || error);
+        return null;
+      }
+
+      if (!content.trim()) {
+        return null;
+      }
+
+      const lines = content.split('\n');
+      const startIndex = Math.max(0, lines.length - SESSION_CONTEXT_SCAN_MAX_LINES);
+      for (let i = lines.length - 1; i >= startIndex; i--) {
+        const line = lines[i];
+        if (!line || !line.trim()) {
+          continue;
+        }
+
+        let parsed;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        if (parsed?.type === 'turn_context' && parsed?.payload && typeof parsed.payload === 'object') {
+          return parsed.payload;
+        }
+      }
+
+      return null;
+    };
+
+    const maybeLogRuntimePolicy = () => {
+      if (runtimePolicyLogged) {
+        return;
+      }
+
+      const turnContext = readLatestTurnContextFromSession();
+      if (!turnContext) {
+        return;
+      }
+
+      const actualApproval = typeof turnContext.approval_policy === 'string'
+        ? turnContext.approval_policy
+        : '';
+      const actualSandbox = turnContext?.sandbox_policy?.type || '';
+      const writableRoots = Array.isArray(turnContext?.sandbox_policy?.writable_roots)
+        ? turnContext.sandbox_policy.writable_roots
+        : [];
+
+      runtimePolicyLogged = true;
+      logDebug('PERM_DEBUG', 'Runtime turn_context policy:', JSON.stringify({
+        expectedApprovalPolicy: threadOptions.approvalPolicy || '',
+        expectedSandboxMode: threadOptions.sandboxMode || '',
+        actualApprovalPolicy: actualApproval,
+        actualSandboxMode: actualSandbox,
+        writableRoots
+      }));
+
+      const expectedApproval = threadOptions.approvalPolicy || '';
+      if (expectedApproval && actualApproval && expectedApproval !== actualApproval) {
+        logWarn(
+          'PERM_DEBUG',
+          `approvalPolicy mismatch: expected=${expectedApproval}, runtime=${actualApproval}`
+        );
+      }
+    };
+
+    const collectPatchOperationsFromSession = () => {
+      const sessionPath = ensureSessionFilePath();
+      if (!sessionPath) {
+        return [];
+      }
+
+      let content = '';
+      try {
+        content = readFileSync(sessionPath, 'utf8');
+      } catch (error) {
+        console.warn('[DEBUG] Failed to read session file:', sessionPath, error?.message || error);
+        return [];
+      }
+
+      if (!content.trim()) {
+        return [];
+      }
+
+      const lines = content.split('\n');
+      const startIndex = sessionLineCursor > 0
+        ? sessionLineCursor
+        : Math.max(0, lines.length - SESSION_PATCH_SCAN_MAX_LINES);
+      const batches = [];
+
+      for (let i = startIndex; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line || !line.trim()) {
+          continue;
+        }
+
+        let parsed;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        if (parsed?.type !== 'response_item' || !parsed.payload) {
+          continue;
+        }
+
+        const payload = parsed.payload;
+        const rawCallId = payload.call_id ?? payload.id ?? `line_${i}`;
+        const callId = String(rawCallId);
+        if (processedPatchCallIds.has(callId)) {
+          continue;
+        }
+
+        const patchText = extractPatchFromResponseItemPayload(payload);
+        if (!patchText) {
+          continue;
+        }
+
+        const operations = parseApplyPatchToOperations(patchText)
+          .map((op) => ({
+            ...op,
+            filePath: resolveFilePath(op.filePath)
+          }))
+          .filter((op) => op.filePath && (op.oldString !== '' || op.newString !== ''));
+
+        processedPatchCallIds.add(callId);
+
+        if (operations.length === 0) {
+          continue;
+        }
+
+        batches.push({ callId, operations });
+      }
+
+      sessionLineCursor = lines.length;
+      return batches;
+    };
+
+    const buildPermissionInputForPatchOperation = (operation) => {
+      if (!operation || typeof operation !== 'object') {
+        return null;
+      }
+
+      const isWrite = operation.toolName === 'write' || operation.kind === 'add';
+      if (isWrite) {
+        return {
+          toolName: 'Write',
+          input: {
+            file_path: operation.filePath,
+            content: operation.newString ?? ''
+          }
+        };
+      }
+
+      return {
+        toolName: 'Edit',
+        input: {
+          file_path: operation.filePath,
+          old_string: operation.oldString ?? '',
+          new_string: operation.newString ?? '',
+          replace_all: false
+        }
+      };
+    };
+
+    const requestPatchApprovalsViaBridge = async (patchBatches) => {
+      const deniedCallIds = new Set();
+      if (!Array.isArray(patchBatches) || patchBatches.length === 0) {
+        return deniedCallIds;
+      }
+
+      for (const batch of patchBatches) {
+        if (!batch || !Array.isArray(batch.operations) || batch.operations.length === 0) {
+          continue;
+        }
+
+        const previewOp = batch.operations[0];
+        const requestPayload = buildPermissionInputForPatchOperation(previewOp);
+        if (!requestPayload) {
+          continue;
+        }
+
+        try {
+          logInfo('PERM_DEBUG', `Patch approval request: callId=${batch.callId}, tool=${requestPayload.toolName}, file=${previewOp?.filePath || ''}`);
+          const allowed = await requestPermissionFromJava(requestPayload.toolName, requestPayload.input);
+          logInfo('PERM_DEBUG', `Patch approval decision: callId=${batch.callId}, allowed=${allowed ? 'true' : 'false'}`);
+          if (!allowed) {
+            deniedCallIds.add(batch.callId);
+          }
+        } catch (error) {
+          logWarn(
+            'PERM_DEBUG',
+            `Patch approval bridge failed (callId=${batch.callId}): ${error?.message || error}`
+          );
+          deniedCallIds.add(batch.callId);
+        }
+      }
+
+      return deniedCallIds;
+    };
+
+    const rollbackSinglePatchOperation = (operation) => {
+      if (!operation || typeof operation !== 'object' || !operation.filePath) {
+        return { ok: false, reason: 'invalid-operation' };
+      }
+
+      const filePath = operation.filePath;
+      const oldString = typeof operation.oldString === 'string' ? operation.oldString : '';
+      const newString = typeof operation.newString === 'string' ? operation.newString : '';
+      const isAddedFile = operation.kind === 'add' || (operation.toolName === 'write' && oldString === '');
+
+      if (isAddedFile) {
+        if (!existsSync(filePath)) {
+          return { ok: true, reason: 'file-already-missing' };
+        }
+        try {
+          unlinkSync(filePath);
+          return { ok: true, reason: 'file-deleted' };
+        } catch (error) {
+          return { ok: false, reason: error?.message || String(error) };
+        }
+      }
+
+      if (!existsSync(filePath)) {
+        return { ok: false, reason: 'file-missing' };
+      }
+
+      let currentContent = '';
+      try {
+        currentContent = readFileSync(filePath, 'utf8');
+      } catch (error) {
+        return { ok: false, reason: error?.message || String(error) };
+      }
+
+      if (newString === oldString) {
+        return { ok: true, reason: 'noop' };
+      }
+
+      if (!newString) {
+        return { ok: false, reason: 'unsupported-empty-new-string' };
+      }
+
+      const index = currentContent.indexOf(newString);
+      if (index < 0) {
+        return { ok: false, reason: 'new-string-not-found' };
+      }
+
+      const revertedContent =
+        currentContent.slice(0, index) +
+        oldString +
+        currentContent.slice(index + newString.length);
+
+      try {
+        writeFileSync(filePath, revertedContent, 'utf8');
+        return { ok: true, reason: 'replaced' };
+      } catch (error) {
+        return { ok: false, reason: error?.message || String(error) };
+      }
+    };
+
+    const rollbackDeniedPatchBatches = (patchBatches, deniedCallIds) => {
+      const resultByCallId = new Map();
+      if (!Array.isArray(patchBatches) || patchBatches.length === 0) {
+        return resultByCallId;
+      }
+      if (!(deniedCallIds instanceof Set) || deniedCallIds.size === 0) {
+        return resultByCallId;
+      }
+
+      for (const batch of patchBatches) {
+        if (!batch || !deniedCallIds.has(batch.callId)) {
+          continue;
+        }
+        const operations = Array.isArray(batch.operations) ? [...batch.operations].reverse() : [];
+        const failures = [];
+        for (const op of operations) {
+          const rollbackResult = rollbackSinglePatchOperation(op);
+          if (!rollbackResult.ok) {
+            failures.push({
+              filePath: op?.filePath || '',
+              reason: rollbackResult.reason
+            });
+          }
+        }
+        resultByCallId.set(batch.callId, {
+          success: failures.length === 0,
+          failures
+        });
+      }
+
+      return resultByCallId;
+    };
+
+    const emitSyntheticPatchOperations = (patchBatches, isError, deniedCallIds = new Set(), rollbackByCallId = new Map()) => {
+      if (!Array.isArray(patchBatches) || patchBatches.length === 0) {
+        return 0;
+      }
+
+      let emittedCount = 0;
+      for (const batch of patchBatches) {
+        if (!batch || !Array.isArray(batch.operations)) {
+          continue;
+        }
+
+        batch.operations.forEach((op, index) => {
+          const toolUseId = `codex_patch_${batch.callId}_${index}`;
+          const toolName = op.toolName === 'write' ? 'write' : 'edit';
+          if (!emittedToolUseIds.has(toolUseId)) {
+            emitMessage({
+              type: 'assistant',
+              message: {
+                role: 'assistant',
+                content: [
+                  {
+                    type: 'tool_use',
+                    id: toolUseId,
+                    name: toolName,
+                    input: {
+                      file_path: op.filePath,
+                      old_string: op.oldString,
+                      new_string: op.newString,
+                      replace_all: false,
+                      source: 'codex_session_patch'
+                    }
+                  }
+                ]
+              }
+            });
+            emittedToolUseIds.add(toolUseId);
+          }
+
+          const deniedByUser = deniedCallIds instanceof Set && deniedCallIds.has(batch.callId);
+          const rollbackResult = rollbackByCallId instanceof Map ? rollbackByCallId.get(batch.callId) : null;
+          const rollbackSucceeded = !deniedByUser || rollbackResult?.success !== false;
+          const opIsError = !!isError || deniedByUser;
+
+          let resultText = 'Patch applied';
+          if (isError) {
+            resultText = 'Patch apply failed';
+          } else if (deniedByUser) {
+            resultText = rollbackSucceeded
+              ? 'Patch denied by user and rolled back'
+              : 'Patch denied by user but rollback failed';
+          }
+
+          emitMessage({
+            type: 'user',
+            message: {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: toolUseId,
+                  is_error: opIsError,
+                  content: resultText
+                }
+              ]
+            }
+          });
+          emittedCount += 1;
+        });
+      }
+
+      return emittedCount;
+    };
+
     /**
      * Extract actual command from shell wrapper
      * Handles formats like: /bin/zsh -lc 'cd dir && command'
@@ -525,8 +1317,13 @@ export async function sendMessage(
       // Extract actual command from shell wrapper
       const actualCmd = extractActualCommand(command);
 
+      // List/find commands -> glob
+      if (/^(ls|find|tree)\b/.test(actualCmd)) {
+        return 'glob';
+      }
+
       // File viewing commands -> read
-      if (/^(ls|pwd|find|cat|head|tail|file|stat|tree)\b/.test(actualCmd)) {
+      if (/^(pwd|cat|head|tail|file|stat)\b/.test(actualCmd)) {
         return 'read';
       }
 
@@ -594,6 +1391,90 @@ export async function sendMessage(
       return actualCmd.length <= 30 ? actualCmd : `Run ${firstWord}`;
     };
 
+    const mapCommandToolNameToPermissionToolName = (toolName) => {
+      if (toolName === 'read') return 'Read';
+      if (toolName === 'glob') return 'Glob';
+      return 'Bash';
+    };
+
+    const emitDeniedCommandToolResultOnce = (toolUseId, messageText = 'Command denied by user') => {
+      if (!toolUseId || emittedDeniedCommandToolResultIds.has(toolUseId)) {
+        return;
+      }
+      emitMessage({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: toolUseId,
+              is_error: true,
+              content: messageText
+            }
+          ]
+        }
+      });
+      emittedDeniedCommandToolResultIds.add(toolUseId);
+    };
+
+    const maybeRequestCommandApprovalViaBridge = async ({
+      toolUseId,
+      command,
+      smartTool,
+      description
+    }) => {
+      const shouldBridgeApproval = threadOptions.approvalPolicy && threadOptions.approvalPolicy !== 'never';
+      if (!shouldBridgeApproval) {
+        return true;
+      }
+
+      const permissionToolName = mapCommandToolNameToPermissionToolName(smartTool);
+
+      const requestInput = {
+        command,
+        description,
+        source: 'codex_command_execution'
+      };
+
+      try {
+        logInfo(
+          'PERM_DEBUG',
+          `Command approval request: toolUseId=${toolUseId}, tool=${permissionToolName}, command=${command}`
+        );
+        const allowed = await requestPermissionFromJava(permissionToolName, requestInput);
+        logInfo(
+          'PERM_DEBUG',
+          `Command approval decision: toolUseId=${toolUseId}, allowed=${allowed ? 'true' : 'false'}`
+        );
+        if (allowed) {
+          return true;
+        }
+      } catch (error) {
+        logWarn(
+          'PERM_DEBUG',
+          `Command approval bridge failed, deny by default: toolUseId=${toolUseId}, error=${error?.message || error}`
+        );
+      }
+
+      deniedCommandToolUseIds.add(toolUseId);
+      suppressNoResponseFallback = true;
+      emitDeniedCommandToolResultOnce(toolUseId, 'Command denied by user and turn aborted');
+      emitMessage({
+        type: 'status',
+        message: 'Approval denied: abort requested (command may have already started)'
+      });
+
+      commandApprovalAbortRequested = true;
+      try {
+        turnAbortController.abort();
+      } catch (error) {
+        logDebug('PERM_DEBUG', `Abort turn failed after command denial: ${error?.message || error}`);
+      }
+
+      return false;
+    };
+
     const emitThinkingBlock = (text) => {
       console.log('[THINKING]', text);
       emitMessage({
@@ -625,16 +1506,48 @@ export async function sendMessage(
       emitThinkingBlock(text);
     };
 
+    const stringifyRawEvent = (event) => {
+      try {
+        const json = JSON.stringify(event);
+        if (!json) return '';
+        if (json.length > RAW_EVENT_LOG_MAX_CHARS) {
+          return `${json.slice(0, RAW_EVENT_LOG_MAX_CHARS)}...<truncated ${json.length - RAW_EVENT_LOG_MAX_CHARS} chars>`;
+        }
+        return json;
+      } catch (error) {
+        return `<stringify failed: ${error?.message || error}>`;
+      }
+    };
+
+    const isApprovalRelatedRawEvent = (rawEventJson) => {
+      if (typeof rawEventJson !== 'string' || !rawEventJson) return false;
+      return /approval|approve|permission|ask_user|ask-user|confirm|consent|tool_approval|requires_approval|plan_approval/i.test(rawEventJson);
+    };
+
     // ============================================================
     // 7. Process Events and Map to Claude-Compatible [MESSAGE] JSON
     // ============================================================
 
-    for await (const event of events) {
-      console.log('[DEBUG] Codex event:', event.type);
+    let rawEventIndex = 0;
+    try {
+      for await (const event of events) {
+        rawEventIndex += 1;
+        const rawEventJson = stringifyRawEvent(event);
+        if (rawEventJson && DEBUG_LEVEL >= 5) {
+          console.log(`[RAW_EVENT][${rawEventIndex}]`, rawEventJson);
+        }
+        if (rawEventJson && DEBUG_LEVEL >= 4 && isApprovalRelatedRawEvent(rawEventJson)) {
+          console.log(`[RAW_EVENT_APPROVAL_HINT][${rawEventIndex}]`, rawEventJson);
+        }
+        maybeLogRuntimePolicy();
+        console.log('[DEBUG] Codex event:', event.type);
 
-      switch (event.type) {
+        switch (event.type) {
         case 'thread.started': {
           currentThreadId = event.thread_id;
+          currentSessionFilePath = null;
+          sessionLineCursor = 0;
+          processedPatchCallIds.clear();
           console.log('[THREAD_ID]', currentThreadId);
           break;
         }
@@ -644,61 +1557,74 @@ export async function sendMessage(
           break;
         }
 
-        case 'item.started': {
-          maybeEmitReasoning(event.item);
-          if (event.item && event.item.type === 'command_execution') {
-            const toolUseId = ensureToolUseId('started', event.item);
-            const command = extractCommand(event.item);
+          case 'item.started': {
+            maybeEmitReasoning(event.item);
+            if (event.item && event.item.type === 'command_execution') {
+              const toolUseId = ensureToolUseId('started', event.item);
+              const command = extractCommand(event.item);
 
-            // Use smart tool name and description conversion
-            const toolName = smartToolName(command);
-            const description = smartDescription(command);
+              // Use smart tool name and description conversion
+              const toolName = smartToolName(command);
+              const description = smartDescription(command);
 
-            emitMessage({
-              type: 'assistant',
-              message: {
-                role: 'assistant',
-                content: [
-                  {
-                    type: 'tool_use',
-                    id: toolUseId,
-                    name: toolName,
-                    input: {
-                      command,
-                      description
+              emitMessage({
+                type: 'assistant',
+                message: {
+                  role: 'assistant',
+                  content: [
+                    {
+                      type: 'tool_use',
+                      id: toolUseId,
+                      name: toolName,
+                      input: {
+                        command,
+                        description
+                      }
                     }
-                  }
-                ]
+                  ]
+                }
+              });
+              emittedToolUseIds.add(toolUseId);
+
+              const allowed = await maybeRequestCommandApprovalViaBridge({
+                toolUseId,
+                command,
+                smartTool: toolName,
+                description
+              });
+              if (!allowed) {
+                logWarn('PERM_DEBUG', `Command denied by approval bridge: ${command}`);
+                // Stop consuming additional events immediately. AbortSignal is still sent above,
+                // but this hard break avoids processing follow-up tool executions in the same turn.
+                throw new Error(COMMAND_DENIED_ABORT_ERROR);
               }
-            });
-            emittedToolUseIds.add(toolUseId);
-          }
+            }
           // Handle MCP tool call started
-          else if (event.item && event.item.type === 'mcp_tool_call') {
-            const toolUseId = event.item.id || randomUUID();
-            // Build tool name: mcp__{server}__{tool}
-            const toolName = `mcp__${event.item.server}__${event.item.tool}`;
+            else if (event.item && event.item.type === 'mcp_tool_call') {
+              const toolUseId = event.item.id || randomUUID();
+              // Build tool name: mcp__{server}__{tool}
+              const toolName = `mcp__${event.item.server}__${event.item.tool}`;
 
-            console.log('[DEBUG] MCP tool call started:', toolName, 'id:', toolUseId);
+              console.log('[DEBUG] MCP tool call started:', toolName, 'id:', toolUseId);
 
-            emitMessage({
-              type: 'assistant',
-              message: {
-                role: 'assistant',
-                content: [
-                  {
-                    type: 'tool_use',
-                    id: toolUseId,
-                    name: toolName,
-                    input: event.item.arguments || {}
-                  }
-                ]
-              }
-            });
-            emittedToolUseIds.add(toolUseId);
+              emitMessage({
+                type: 'assistant',
+                message: {
+                  role: 'assistant',
+                  content: [
+                    {
+                      type: 'tool_use',
+                      id: toolUseId,
+                      name: toolName,
+                      input: event.item.arguments || {}
+                    }
+                  ]
+                }
+              });
+              emittedToolUseIds.add(toolUseId);
+            }
+            break;
           }
-          break;
-        }
 
         case 'item.updated': {
           maybeEmitReasoning(event.item);
@@ -739,6 +1665,11 @@ export async function sendMessage(
           } else if (event.item.type === 'command_execution') {
             const toolUseId = ensureToolUseId('completed', event.item);
             const command = extractCommand(event.item);
+            if (deniedCommandToolUseIds.has(toolUseId)) {
+              emitDeniedCommandToolResultOnce(toolUseId);
+              console.log('[DEBUG] Skip command output because approval denied:', command);
+              break;
+            }
             const output =
               event.item.aggregated_output ??
               event.item.output ??
@@ -790,6 +1721,56 @@ export async function sendMessage(
                 ]
               }
             });
+          }
+          else if (event.item.type === 'file_change') {
+            const status = event.item.status || 'completed';
+            const isError = status !== 'completed';
+
+            // Print the full structure to help diagnose field differences later.
+            try {
+              console.log('[DEBUG] file_change raw item:', JSON.stringify(event.item));
+            } catch (error) {
+              console.log('[DEBUG] file_change raw item stringify failed:', error?.message || error);
+            }
+
+            const patchBatches = collectPatchOperationsFromSession();
+            let deniedCallIds = new Set();
+            let rollbackByCallId = new Map();
+
+            // Codex SDK exec mode may force approval_policy=never in some host environments.
+            // As a fallback, bridge to the plugin-side approval dialog so users can still
+            // see approval flow and reject write results.
+            const shouldBridgeApproval = !isError &&
+              !isAutoEditPermissionMode(normalizedPermissionMode) &&
+              (threadOptions.approvalPolicy && threadOptions.approvalPolicy !== 'never');
+            if (shouldBridgeApproval && patchBatches.length > 0) {
+              deniedCallIds = await requestPatchApprovalsViaBridge(patchBatches);
+              if (deniedCallIds.size > 0) {
+                rollbackByCallId = rollbackDeniedPatchBatches(patchBatches, deniedCallIds);
+                const failedRollbackCount = Array.from(rollbackByCallId.values())
+                  .filter((item) => item && item.success === false)
+                  .length;
+                emitMessage({
+                  type: 'status',
+                  message: failedRollbackCount > 0
+                    ? `Approval denied: attempted to rollback ${deniedCallIds.size} change(s), ${failedRollbackCount} rollback(s) failed`
+                    : `Approval denied: rolled back ${deniedCallIds.size} change(s)`
+                });
+              }
+            }
+
+            const emitted = emitSyntheticPatchOperations(
+              patchBatches,
+              isError,
+              deniedCallIds,
+              rollbackByCallId
+            );
+
+            if (emitted > 0) {
+              console.log('[DEBUG] file_change synthesized operations:', emitted);
+            } else {
+              console.log('[DEBUG] file_change: no patch operations found in session log');
+            }
           }
           // Handle MCP tool call completed
           else if (event.item.type === 'mcp_tool_call') {
@@ -893,36 +1874,55 @@ export async function sendMessage(
           break;
         }
 
-        case 'turn.failed': {
-          const errorMsg = event.error?.message || 'Turn failed';
-          if (isReconnectNotice(errorMsg)) {
-            console.warn('[DEBUG] Codex reconnect notice:', errorMsg);
-            emitStatusMessage(emitMessage, errorMsg);
-            break;
+          case 'turn.failed': {
+            const errorMsg = event.error?.message || 'Turn failed';
+            if (isReconnectNotice(errorMsg)) {
+              console.warn('[DEBUG] Codex reconnect notice:', errorMsg);
+              emitStatusMessage(emitMessage, errorMsg);
+              break;
+            }
+            if (commandApprovalAbortRequested && /aborted|abort|cancel|interrupt/i.test(errorMsg)) {
+              logInfo('PERM_DEBUG', `Ignore turn.failed after command denial abort: ${errorMsg}`);
+              break;
+            }
+            console.error('[DEBUG] Turn failed:', errorMsg);
+            throw new Error(errorMsg);
           }
-          console.error('[DEBUG] Turn failed:', errorMsg);
-          throw new Error(errorMsg);
-        }
 
-        case 'error': {
-          const generalError = event.message || 'Unknown error';
-          if (isReconnectNotice(generalError)) {
-            console.warn('[DEBUG] Codex reconnect notice:', generalError);
-            emitStatusMessage(emitMessage, generalError);
-            break;
+          case 'error': {
+            const generalError = event.message || 'Unknown error';
+            if (isReconnectNotice(generalError)) {
+              console.warn('[DEBUG] Codex reconnect notice:', generalError);
+              emitStatusMessage(emitMessage, generalError);
+              break;
+            }
+            if (commandApprovalAbortRequested && /aborted|abort|cancel|interrupt/i.test(generalError)) {
+              logInfo('PERM_DEBUG', `Ignore error event after command denial abort: ${generalError}`);
+              break;
+            }
+            console.error('[DEBUG] Codex error:', generalError);
+            throw new Error(generalError);
           }
-          console.error('[DEBUG] Codex error:', generalError);
-          throw new Error(generalError);
-        }
 
-        default: {
-          // Log unknown events with more details to help diagnose MCP tool issues
-          const payloadType = event.payload?.type;
-          console.log('[DEBUG] Unknown event type:', event.type, 'payload.type:', payloadType);
-          if (event.type === 'event_msg' || payloadType === 'function_call' || payloadType === 'function_call_output') {
-            console.log('[DEBUG] Full event:', JSON.stringify(event).substring(0, 500));
+          default: {
+            // Log unknown events with more details to help diagnose MCP tool issues
+            const payloadType = event.payload?.type;
+            console.log('[DEBUG] Unknown event type:', event.type, 'payload.type:', payloadType);
+            if (event.type === 'event_msg' || payloadType === 'function_call' || payloadType === 'function_call_output') {
+              console.log('[DEBUG] Full event:', JSON.stringify(event).substring(0, 500));
+            }
           }
         }
+      }
+    } catch (streamError) {
+      const streamErrorMessage = streamError?.message || String(streamError);
+      if (commandApprovalAbortRequested && (
+        streamErrorMessage === COMMAND_DENIED_ABORT_ERROR ||
+        /aborted|abort|cancel|interrupt/i.test(streamErrorMessage)
+      )) {
+        logInfo('PERM_DEBUG', `Suppress streamed turn abort after command denial: ${streamErrorMessage}`);
+      } else {
+        throw streamError;
       }
     }
 
@@ -935,12 +1935,12 @@ export async function sendMessage(
     // ============================================================
 
     // If no agent message received, provide explanation
-    if (assistantText.length === 0) {
+    if (!suppressNoResponseFallback && assistantText.length === 0) {
       const noResponseMsg = [
         '\n⚠️ Codex completed tool executions but did not generate a text response.',
         'This may happen when:',
         '- The task was purely about gathering information',
-        '- Codex reached maxTurns limit (100 turns)',
+        '- Codex reached maxTurns limit (200 turns)',
         '- The query required only command execution',
         '\nPlease try:',
         '- Asking a more specific question',
@@ -973,6 +1973,110 @@ export async function sendMessage(
     console.error('[SEND_ERROR]', JSON.stringify(errorPayload));
     console.log(JSON.stringify(errorPayload));
   }
+}
+
+/**
+ * Gets the tools list for a Codex MCP server.
+ * Reuses mcp-status-service probing logic to avoid duplicate handshake implementation.
+ *
+ * @param {string} serverId
+ * @param {Object} rawServerConfig
+ */
+export async function getMcpServerTools(serverId, rawServerConfig) {
+  try {
+    if (!serverId) {
+      const invalid = {
+        success: false,
+        serverId: '',
+        error: 'Missing serverId',
+        tools: []
+      };
+      console.log('[MCP_SERVER_TOOLS]' + JSON.stringify(invalid));
+      console.log(JSON.stringify(invalid));
+      return;
+    }
+
+    if (!rawServerConfig || typeof rawServerConfig !== 'object') {
+      const invalid = {
+        success: false,
+        serverId,
+        error: 'Missing serverConfig',
+        tools: []
+      };
+      console.log('[MCP_SERVER_TOOLS]' + JSON.stringify(invalid));
+      console.log(JSON.stringify(invalid));
+      return;
+    }
+
+    const serverConfig = normalizeCodexMcpConfig(rawServerConfig);
+    const toolsResult = await getMcpServerToolsImpl(serverId, serverConfig);
+    const tools = Array.isArray(toolsResult?.tools) ? toolsResult.tools : [];
+    const hasError = !!toolsResult?.error;
+
+    const result = {
+      success: !hasError || tools.length > 0,
+      serverId,
+      serverName: toolsResult?.name || serverId,
+      tools,
+      error: toolsResult?.error || null
+    };
+
+    const resultJson = JSON.stringify(result);
+    // Prefixed line is consumed by CodexSDKBridge Java reader; plain line is the fallback parser.
+    console.log('[MCP_SERVER_TOOLS]' + resultJson);
+    console.log(resultJson);
+  } catch (error) {
+    const errorResult = {
+      success: false,
+      serverId: serverId || '',
+      error: error?.message || String(error),
+      tools: []
+    };
+    const resultJson = JSON.stringify(errorResult);
+    console.log('[MCP_SERVER_TOOLS]' + resultJson);
+    console.log(resultJson);
+  }
+}
+
+/**
+ * Converts Codex config field names to a format recognized by mcp-status-service.
+ *
+ * @param {Object} raw
+ * @returns {Object}
+ */
+function normalizeCodexMcpConfig(raw) {
+  const normalized = { ...raw };
+  const type = normalized.type || (normalized.url ? 'http' : 'stdio');
+  normalized.type = type;
+
+  // Codex: http_headers -> mcp-status: headers
+  if (!normalized.headers && normalized.http_headers && typeof normalized.http_headers === 'object') {
+    normalized.headers = { ...normalized.http_headers };
+  }
+
+  // Codex: env_http_headers (values are env var names) -> headers (resolved values)
+  if (normalized.env_http_headers && typeof normalized.env_http_headers === 'object') {
+    const fromEnv = {};
+    for (const [headerName, envName] of Object.entries(normalized.env_http_headers)) {
+      if (typeof envName === 'string') {
+        const envValue = process.env[envName];
+        if (envValue) {
+          fromEnv[headerName] = envValue;
+        }
+      }
+    }
+    normalized.headers = { ...(normalized.headers || {}), ...fromEnv };
+  }
+
+  // Codex: bearer_token_env_var -> Authorization header
+  if (normalized.bearer_token_env_var && typeof normalized.bearer_token_env_var === 'string') {
+    const token = process.env[normalized.bearer_token_env_var];
+    if (token && !(normalized.headers && normalized.headers.Authorization)) {
+      normalized.headers = { ...(normalized.headers || {}), Authorization: `Bearer ${token}` };
+    }
+  }
+
+  return normalized;
 }
 
 /**

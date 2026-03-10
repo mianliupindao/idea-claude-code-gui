@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import { sendToJava } from '../utils/bridge.js';
 
 interface ContextMenuState {
@@ -8,6 +9,36 @@ interface ContextMenuState {
   hasSelection: boolean;
   savedRange: Range | null;
   selectedText: string;
+}
+
+function placeCursorAfterRemoval(
+  editable: HTMLElement,
+  nextSibling: ChildNode | null,
+  previousSibling: ChildNode | null
+): void {
+  const selection = window.getSelection();
+  if (!selection) return;
+
+  const range = document.createRange();
+  if (nextSibling?.isConnected) {
+    if (nextSibling.nodeType === Node.TEXT_NODE) {
+      range.setStart(nextSibling, 0);
+    } else {
+      range.setStartBefore(nextSibling);
+    }
+  } else if (previousSibling?.isConnected) {
+    if (previousSibling.nodeType === Node.TEXT_NODE) {
+      const textLength = previousSibling.textContent?.length ?? 0;
+      range.setStart(previousSibling, textLength);
+    } else {
+      range.setStartAfter(previousSibling);
+    }
+  } else {
+    range.selectNodeContents(editable);
+  }
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 function restoreRange(range: Range | null): void {
@@ -25,21 +56,36 @@ export function useContextMenu() {
   const [state, setState] = useState<ContextMenuState>({
     visible: false, x: 0, y: 0, hasSelection: false, savedRange: null, selectedText: '',
   });
+  const targetFileTagRef = useRef<HTMLElement | null>(null);
 
-  const open = useCallback((e: React.MouseEvent) => {
+  const open = useCallback((e: ReactMouseEvent) => {
     e.preventDefault();
     const sel = window.getSelection();
-    const selectedText = sel?.toString() ?? '';
+    const textSelection = sel?.toString() ?? '';
+    const fileTag = (e.target as HTMLElement | null)?.closest('.file-tag') as HTMLElement | null;
+    const fileTagPath = fileTag?.getAttribute('data-file-path')?.trim() ?? '';
+    // When right-clicking on a file tag, copy its full @path reference instead of misjudging as "no selection".
+    const selectedText = textSelection.trim().length > 0
+      ? textSelection
+      : (fileTagPath ? `@${fileTagPath}` : '');
     const hasSelection = selectedText.trim().length > 0;
     const savedRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
-    setState({ visible: true, x: e.clientX, y: e.clientY, hasSelection, savedRange, selectedText });
+    targetFileTagRef.current = fileTag;
+    setState({
+      visible: true,
+      x: e.clientX,
+      y: e.clientY,
+      hasSelection,
+      savedRange,
+      selectedText,
+    });
   }, []);
 
   const close = useCallback(() => {
     setState(prev => ({ ...prev, visible: false }));
   }, []);
 
-  return { ...state, open, close };
+  return { ...state, open, close, targetFileTag: targetFileTagRef.current };
 }
 
 /** Copy saved selection text to clipboard via Java bridge */
@@ -49,9 +95,22 @@ export function copySelection(_savedRange: Range | null, text: string): void {
 }
 
 /** Cut saved selection text via Java bridge (for contenteditable) */
-export function cutSelection(savedRange: Range | null, text: string, el?: HTMLElement): void {
+export function cutSelection(
+  savedRange: Range | null,
+  text: string,
+  el?: HTMLElement,
+  targetFileTag?: HTMLElement | null
+): void {
   if (!text) return;
   sendToJava('write_clipboard', text);
+  if (targetFileTag?.isConnected && el?.contains(targetFileTag)) {
+    const nextSibling = targetFileTag.nextSibling;
+    const previousSibling = targetFileTag.previousSibling;
+    targetFileTag.remove();
+    el.focus();
+    placeCursorAfterRemoval(el, nextSibling, previousSibling);
+    return;
+  }
   if (el) el.focus();
   restoreRange(savedRange);
   document.execCommand('delete');

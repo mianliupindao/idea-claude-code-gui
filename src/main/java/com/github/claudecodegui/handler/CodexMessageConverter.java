@@ -5,18 +5,53 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * Codex message format conversion utilities.
  * <p>
- * Contains all pure static methods for converting Codex message formats to Claude-compatible
+ * Contains static methods for converting Codex message formats to Claude-compatible
  * frontend formats. Extracted from HistoryHandler to improve separation of concerns.
  * <p>
- * These methods have no state and do not depend on any handler context.
+ * Note: {@link #SESSION_FILE_MAP} maintains minimal state to track file-writing sessions
+ * across related exec_command / write_stdin pairs. Call {@link #clearSessionState()} when
+ * a new conversation starts to avoid stale entries.
  */
 public class CodexMessageConverter {
 
+    /** Maximum number of tracked file-writing sessions to prevent unbounded growth. */
+    private static final int MAX_SESSION_ENTRIES = 256;
+
+    // Tracks file-writing sessions so later write_stdin events can display the target file.
+    // Uses a bounded LRU map to prevent memory leaks over long IDE sessions.
+    private static final Map<Integer, String> SESSION_FILE_MAP =
+        Collections.synchronizedMap(new LinkedHashMap<Integer, String>(64, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<Integer, String> eldest) {
+                return size() > MAX_SESSION_ENTRIES;
+            }
+        });
+
+    // Extracts a destination path from common shell write patterns.
+    // Note: The echo/printf alternative uses [^>]* instead of .* to prevent greedy matching across redirections.
+    private static final Pattern WRITE_CMD_PATTERN = Pattern.compile(
+        "cat\\s*>\\s*([^\\s;|&]+)|tee\\s+(?:-[a-zA-Z]+\\s+)*([^\\s;|&]+)|(?:echo|printf)\\s+[^>]*>\\s*([^\\s;|&]+)"
+    );
+
     private CodexMessageConverter() {
-        // Utility class, no instantiation
+        // Utility class, no instantiation.
+    }
+
+    /**
+     * Clear session tracking state. Should be called when a new conversation starts
+     * to avoid stale session-to-file mappings.
+     */
+    public static void clearSessionState() {
+        SESSION_FILE_MAP.clear();
     }
 
     /**
@@ -156,7 +191,7 @@ public class CodexMessageConverter {
                 if (item.isJsonObject()) {
                     JsonObject itemObj = item.getAsJsonObject();
 
-                    // Extract text type
+                    // Flatten supported text-like blocks into a single preview string for the frontend.
                     if (itemObj.has("type") && "text".equals(itemObj.get("type").getAsString())) {
                         if (itemObj.has("text")) {
                             if (sb.length() > 0) {
@@ -250,15 +285,21 @@ public class CodexMessageConverter {
      * Convert Codex function_call to Claude tool_use format.
      */
     public static JsonObject convertFunctionCallToToolUse(JsonObject payload, String timestamp) {
-        JsonObject frontendMsg = new JsonObject();
-        frontendMsg.addProperty("type", "assistant");
-
         String toolName = payload.has("name") ? payload.get("name").getAsString() : "unknown";
         JsonElement toolInput = parseToolArguments(payload);
 
-        // Smart tool name conversion
+        // Normalize tool identities first so downstream input conversion can target the displayed tool name.
         toolName = convertToolName(toolName, toolInput);
+
+        // Filter out ignored tools (e.g., write_stdin)
+        if (toolName == null) {
+            return null;
+        }
+
         toolInput = convertToolInput(toolName, toolInput);
+
+        JsonObject frontendMsg = new JsonObject();
+        frontendMsg.addProperty("type", "assistant");
 
         // Build tool_use format
         JsonObject toolUse = new JsonObject();
@@ -303,15 +344,24 @@ public class CodexMessageConverter {
 
     /**
      * Smart tool name conversion (shell_command -> read/glob, update_plan -> todowrite).
+     *
+     * @return converted tool name, or null if the tool should be filtered out (e.g. write_stdin).
      */
     public static String convertToolName(String toolName, JsonElement toolInput) {
         if ("shell_command".equals(toolName) && toolInput != null && toolInput.isJsonObject()) {
             JsonObject inputObj = toolInput.getAsJsonObject();
             if (inputObj.has("command")) {
                 String command = inputObj.get("command").getAsString().trim();
-                if (command.matches("^(ls|pwd|find|cat|head|tail|file|stat|tree)\\b.*")) {
+                // List/find commands -> glob (consistent with ai-bridge smartToolName)
+                if (command.matches("^(ls|find|tree)\\b.*")) {
+                    return "glob";
+                }
+                // File viewing commands -> read
+                if (command.matches("^(pwd|cat|head|tail|file|stat)\\b.*")) {
                     return "read";
-                } else if (command.matches("^(grep|rg|ack|ag)\\b.*")) {
+                }
+                // Search commands -> glob
+                if (command.matches("^(grep|rg|ack|ag)\\b.*")) {
                     return "glob";
                 }
             }
@@ -322,13 +372,55 @@ public class CodexMessageConverter {
                 return "todowrite";
             }
         }
+        // Ignore write_stdin - it's waiting for previous command result
+        if ("write_stdin".equals(toolName)) {
+            return null;
+        }
         return toolName;
     }
 
     /**
      * Convert tool input (update_plan -> todowrite format conversion).
+     * Also tracks exec_command sessions and enriches write_stdin with file paths.
      */
     public static JsonElement convertToolInput(String toolName, JsonElement toolInput) {
+        // Capture the write target when a terminal session starts writing to a file.
+        if ("exec_command".equals(toolName) && toolInput != null && toolInput.isJsonObject()) {
+            JsonObject inputObj = toolInput.getAsJsonObject();
+            if (inputObj.has("cmd") && inputObj.has("session_id")) {
+                String cmd = inputObj.get("cmd").getAsString();
+                int sessionId = inputObj.get("session_id").getAsInt();
+
+                // The regex covers redirection and tee-based writes used by the coding agents.
+                Matcher matcher = WRITE_CMD_PATTERN.matcher(cmd);
+                if (matcher.find()) {
+                    String filePath = matcher.group(1) != null ? matcher.group(1) :
+                                    (matcher.group(2) != null ? matcher.group(2) : matcher.group(3));
+                    if (filePath != null) {
+                        SESSION_FILE_MAP.put(sessionId, filePath.trim());
+                    }
+                }
+            }
+        }
+
+        // Enrich incremental writes with the previously discovered destination path.
+        if ("write".equals(toolName) && toolInput != null && toolInput.isJsonObject()) {
+            JsonObject inputObj = toolInput.getAsJsonObject();
+            if (inputObj.has("session_id")) {
+                int sessionId = inputObj.get("session_id").getAsInt();
+                String filePath = SESSION_FILE_MAP.get(sessionId);
+                if (filePath != null) {
+                    JsonObject enriched = new JsonObject();
+                    for (String key : inputObj.keySet()) {
+                        enriched.add(key, inputObj.get(key));
+                    }
+                    enriched.addProperty("file_path", filePath);
+                    return enriched;
+                }
+            }
+        }
+
+        // Translate plan updates into the todo structure expected by the Claude-style frontend.
         if (!"todowrite".equals(toolName) || toolInput == null || !toolInput.isJsonObject()) {
             return toolInput;
         }
@@ -384,6 +476,66 @@ public class CodexMessageConverter {
         JsonObject rawObj = new JsonObject();
         rawObj.add("content", content);
         rawObj.addProperty("role", "user");
+        frontendMsg.add("raw", rawObj);
+
+        if (timestamp != null) {
+            frontendMsg.addProperty("timestamp", timestamp);
+        }
+
+        return frontendMsg;
+    }
+
+    /**
+     * Convert Codex custom_tool_call to Claude tool_use format.
+     * Handles apply_patch and other custom tools.
+     */
+    public static JsonObject convertCustomToolCallToToolUse(JsonObject payload, String timestamp) {
+        JsonObject frontendMsg = new JsonObject();
+        frontendMsg.addProperty("type", "assistant");
+
+        String toolName = payload.has("name") ? payload.get("name").getAsString() : "unknown";
+
+        // Safely extract tool input as string, handling non-primitive types
+        String toolInput;
+        if (payload.has("input") && payload.get("input").isJsonPrimitive()) {
+            toolInput = payload.get("input").getAsString();
+        } else if (payload.has("input")) {
+            toolInput = payload.get("input").toString();
+        } else {
+            toolInput = "";
+        }
+
+        JsonObject toolUse = new JsonObject();
+        toolUse.addProperty("type", "tool_use");
+        toolUse.addProperty("id", payload.has("call_id") ? payload.get("call_id").getAsString() : "unknown");
+        toolUse.addProperty("name", toolName);
+
+        JsonObject input = new JsonObject();
+        input.addProperty("patch", toolInput);
+
+        // Surface the first touched file so the frontend can show a concrete target for patch-based edits.
+        if ("apply_patch".equals(toolName)
+                && (toolInput.contains("*** Add File:") || toolInput.contains("*** Update File:"))) {
+            String[] lines = toolInput.split("\n");
+            for (String line : lines) {
+                if (line.startsWith("*** Add File:") || line.startsWith("*** Update File:")) {
+                    String filePath = line.substring(line.indexOf(":") + 1).trim();
+                    input.addProperty("file_path", filePath);
+                    break;
+                }
+            }
+        }
+
+        toolUse.add("input", input);
+
+        JsonArray content = new JsonArray();
+        content.add(toolUse);
+
+        frontendMsg.addProperty("content", "Tool: " + toolName);
+
+        JsonObject rawObj = new JsonObject();
+        rawObj.add("content", content);
+        rawObj.addProperty("role", "assistant");
         frontendMsg.add("raw", rawObj);
 
         if (timestamp != null) {

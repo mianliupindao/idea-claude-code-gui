@@ -182,6 +182,8 @@
         "enabled": "Enabled",
         "disabled": "Disabled",
         "hint": "When enabled, a notification sound will play when AI completes a task, so you'll know even when away from the screen.",
+        "onlyWhenUnfocused": "Play only when IDE is not focused",
+        "onlyWhenUnfocusedHint": "When enabled, the sound will only play when the IDE window is not in focus.",
         "selectSound": "Notification Sound",
         "soundDefault": "Default",
         "soundChime": "Chime",
@@ -248,7 +250,18 @@
     "mcp": "MCP Servers",
     "mcpDesc": "Configure and manage Model Context Protocol servers",
     "permissions": "Permissions",
-    "permissionsDesc": "Manage Claude Code's file access and operation permissions",
+    "permissionsDesc": "Manage Claude Code file access and operation permissions",
+    "codexPermissionsDesc": "Manage Codex permissions and sandbox policies",
+    "permissionsPanel": {
+      "codexSandboxTitle": "Codex Sandbox Mode",
+      "codexSandboxDesc": "Control system access boundaries when Codex executes commands. Keep workspace-write by default and only enable full access when required.",
+      "workspaceWriteTitle": "workspace-write (Recommended)",
+      "workspaceWriteDesc": "Read/write is limited to the workspace. System-level operations are restricted for safety.",
+      "fullAccessTitle": "danger-full-access",
+      "fullAccessDesc": "Allows higher system access, suitable for commands like adb or docker that require extra permissions.",
+      "hint": "This setting only affects Codex process sandboxing and does not change Claude Code permission behavior.",
+      "claudeTip": "Claude Code approval mode is configured from the chat input mode selector."
+    },
     "commit": {
       "title": "Commit AI",
       "description": "Configure AI-generated Git commit message behavior",
@@ -331,6 +344,7 @@
       "emptyProvider": "No provider configured",
       "notConfigured": "Not configured",
       "apiKey": "API Key",
+      "apiKeyHelper": "API Key Helper",
       "baseUrl": "Base URL",
       "provider": "Provider",
       "source": "Source",
@@ -350,6 +364,7 @@
       "convertSuccess": "Conversion successful, new ID generated and disconnected",
       "importing": "Importing...",
       "allProviders": "All Providers",
+      "dragToSort": "Drag to reorder",
       "import": "Import",
       "importFromCcSwitchUpdate": "Import/Update from cc-switch",
       "importFromCcSwitchFile": "Select cc-switch.db File to Import",
@@ -370,6 +385,49 @@
       "localProviderName": "Local settings.json",
       "localProviderDescription": "Use configuration directly from ~/.claude/settings.json",
       "localProviderHelp": "When using local provider mode:\n• The plugin will not modify your ~/.claude/settings.json file\n• You need to manually manage your configurations\n• Make sure the file exists and contains valid JSON\n• Suitable for advanced users who prefer manual control",
+      "subscriptionTutorial": {
+        "entry": "Subscription Account Guide",
+        "dialogTitle": "How to use a subscription account",
+        "tabAriaLabel": "Subscription account guide tabs",
+        "tabs": {
+          "claude": "Claude Subscription",
+          "codex": "Codex Subscription"
+        },
+        "code": {
+          "copy": "Copy Code",
+          "copied": "Copied"
+        },
+        "providers": {
+          "claude": {
+            "title": "How to use Claude Code Subscription Account",
+            "item1": "Log in to your Claude Code subscription account via claude code CLI in the terminal, then you can chat normally in the terminal",
+            "item2": "Make sure the ~/.claude/settings.json file and .env file are empty",
+            "item3": "Restart IDEA, and you can chat normally",
+            "emptyConfigCodeLabel": "~/.claude/settings.json",
+            "emptyConfigCode": "{\n  \"env\": {\n  }\n}",
+            "noteTitle": "Special Case Notes:",
+            "note1": "If you have done the above but the plugin still does not respond, try setting ~/.claude/settings.json .env to:",
+            "proxyConfigCodeLabel": "~/.claude/settings.json",
+            "proxyConfigCode": "{\n  \"env\": {\n    \"HTTP_PROXY\": \"http://127.0.0.1:7897\",\n    \"HTTPS_PROXY\": \"http://127.0.0.1:7897\"\n  }\n}",
+            "issuePrefix": "If it still doesn't work, please report an issue on GitHub: ",
+            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+          },
+          "codex": {
+            "title": "Codex Subscription Account Setup",
+            "item1": "Run codex login in the terminal Codex CLI and log in successfully, then you can chat in the terminal",
+            "item2": "Restart IDEA",
+            "item3": "You can now chat normally",
+            "emptyConfigCodeLabel": "",
+            "emptyConfigCode": "",
+            "noteTitle": "",
+            "note1": "",
+            "proxyConfigCodeLabel": "",
+            "proxyConfigCode": "",
+            "issuePrefix": "If it still doesn't work, please report an issue on GitHub: ",
+            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+          }
+        }
+      },
       "importDialog": {
         "title": "Import cc-switch Configuration",
         "summary": "Found {{total}} configurations, including",
@@ -568,6 +626,17 @@
       "deleteConfirmTitle": "Confirm Delete",
       "deleteConfirmMessage": "Are you sure you want to delete prompt \"{{name}}\"? This action cannot be undone.",
       "description": "Create common prompt templates. Type ! in the chat input to quickly select and insert",
+      "global": "Global Prompts",
+      "project": "Project Prompts",
+      "projectScope": "Project Prompts - {{projectName}}",
+      "noProject": "No Active Project",
+      "copyToGlobal": "Copy to Global",
+      "scopeLabel": {
+        "global": "Global",
+        "project": "Project"
+      },
+      "copyToGlobalSuccess": "Copied to global prompts",
+      "projectPromptsUnavailable": "Project prompts unavailable in current project",
       "dialog": {
         "addTitle": "Create Prompt",
         "editTitle": "Edit Prompt",
@@ -971,7 +1040,9 @@
     "bashGroupCompleted": "completed",
     "bashGroupAllCompleted": "All Completed",
     "bashGroupFailed": "failed",
-    "promptLabel": "Prompt"
+    "promptLabel": "Prompt",
+    "updatePlan": "Update Plan",
+    "applyPatch": "Apply Patch"
   },
   "todo": {
     "inProgress": "In Progress {{completed}}/{{total}} tasks",
@@ -1172,9 +1243,9 @@
         "label": "gpt-5.3-codex",
         "description": "Latest frontier agentic coding model with enhanced capabilities."
       },
-      "gpt53": {
-        "label": "gpt-5.3",
-        "description": "Latest frontier model with significant improvements."
+      "gpt54": {
+        "label": "gpt-5.4",
+        "description": "Latest frontier model with enhanced capabilities."
       },
       "gpt52codex": {
         "label": "gpt-5.2-codex",
@@ -1187,10 +1258,6 @@
       "gpt51codexMini": {
         "label": "gpt-5.1-codex-mini",
         "description": "Optimized for codex. Cheaper, faster, but less capable."
-      },
-      "gpt52": {
-        "label": "gpt-5.2",
-        "description": "Latest frontier model with improvements across knowledge."
       }
     }
   },
@@ -1229,8 +1296,8 @@
     },
     "acceptEdits": {
       "label": "Auto Edit",
-      "tooltip": "Codex approval_policy=auto-edit – automatically applies file patches, still asks before shell commands.",
-      "description": "Auto-create and edit files via apply_patch while keeping command approvals."
+      "tooltip": "Codex approval_policy=on-request – asks for approval when needed",
+      "description": "Balanced option. Allows normal editing flow while still requiring approvals when needed."
     },
     "bypassPermissions": {
       "label": "Full Auto",

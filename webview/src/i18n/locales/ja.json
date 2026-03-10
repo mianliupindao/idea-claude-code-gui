@@ -314,6 +314,7 @@
       "emptyProvider": "プロバイダーが設定されていません",
       "notConfigured": "未設定",
       "apiKey": "APIキー",
+      "apiKeyHelper": "APIキーヘルパー",
       "baseUrl": "ベースURL",
       "provider": "プロバイダー",
       "source": "ソース",
@@ -353,6 +354,49 @@
       "localProviderName": "Local settings.json",
       "localProviderDescription": "Use configuration directly from ~/.claude/settings.json",
       "localProviderHelp": "When using local provider mode:\n• The plugin will not modify your ~/.claude/settings.json file\n• You need to manually manage your configurations\n• Make sure the file exists and contains valid JSON\n• Suitable for advanced users who prefer manual control",
+      "subscriptionTutorial": {
+        "entry": "サブスクリプションアカウントガイド",
+        "dialogTitle": "サブスクリプションアカウントの使い方",
+        "tabAriaLabel": "サブスクリプションアカウントガイドタブ",
+        "tabs": {
+          "claude": "Claude サブスクリプション",
+          "codex": "Codex サブスクリプション"
+        },
+        "code": {
+          "copy": "コードをコピー",
+          "copied": "コピー済み"
+        },
+        "providers": {
+          "claude": {
+            "title": "Claude Code サブスクリプションアカウントの使い方",
+            "item1": "ターミナルの Claude Code CLI でサブスクリプションアカウントにログインし、ターミナルで正常にチャットできることを確認してください",
+            "item2": "~/.claude/settings.json ファイルと .env ファイルが空であることを確認してください",
+            "item3": "IDEA を再起動すると、正常にチャットできます",
+            "emptyConfigCodeLabel": "~/.claude/settings.json",
+            "emptyConfigCode": "{\n  \"env\": {\n  }\n}",
+            "noteTitle": "特殊ケースの注意：",
+            "note1": "上記の手順を実行したにもかかわらずプラグインが応答しない場合は、~/.claude/settings.json .env を以下に変更してみてください：",
+            "proxyConfigCodeLabel": "~/.claude/settings.json",
+            "proxyConfigCode": "{\n  \"env\": {\n    \"HTTP_PROXY\": \"http://127.0.0.1:7897\",\n    \"HTTPS_PROXY\": \"http://127.0.0.1:7897\"\n  }\n}",
+            "issuePrefix": "それでも解決しない場合は、GitHub に問題を報告してください：",
+            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+          },
+          "codex": {
+            "title": "Codex サブスクリプションアカウントのセットアップ",
+            "item1": "ターミナルの Codex CLI で codex login を実行してログインし、ターミナルでチャットできることを確認してください",
+            "item2": "IDEA を再起動",
+            "item3": "正常にチャットできます",
+            "emptyConfigCodeLabel": "",
+            "emptyConfigCode": "",
+            "noteTitle": "",
+            "note1": "",
+            "proxyConfigCodeLabel": "",
+            "proxyConfigCode": "",
+            "issuePrefix": "それでも解決しない場合は、GitHub に問題を報告してください：",
+            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+          }
+        }
+      },
       "importDialog": {
         "title": "cc-switch設定をインポート",
         "summary": "{{total}}個の設定が見つかりました。以下を含みます",
@@ -879,8 +923,7 @@
     "bashGroupBatchExecution": "Batch Execution",
     "bashGroupCompleted": "completed",
     "bashGroupAllCompleted": "All Completed",
-    "bashGroupFailed": "failed",
-    "promptLabel": "プロンプト"
+    "bashGroupFailed": "failed"
   },
   "todo": {
     "inProgress": "進行中 {{completed}}/{{total}} タスク",
@@ -1082,9 +1125,9 @@
         "label": "gpt-5.3-codex",
         "description": "最新の最先端エージェントコーディングモデル（機能強化版）"
       },
-      "gpt53": {
-        "label": "gpt-5.3",
-        "description": "最新の最先端モデル、大幅な性能向上"
+      "gpt54": {
+        "label": "gpt-5.4",
+        "description": "拡張された能力を備えた最新の最先端モデル"
       },
       "gpt52codex": {
         "label": "gpt-5.2-codex",
@@ -1097,10 +1140,6 @@
       "gpt51codexMini": {
         "label": "gpt-5.1-codex-mini",
         "description": "Codex用に最適化。より安価で高速ですが、性能は低下"
-      },
-      "gpt52": {
-        "label": "gpt-5.2",
-        "description": "知識全般が向上した最新の最先端モデル"
       }
     }
   },
@@ -1139,8 +1178,8 @@
     },
     "acceptEdits": {
       "label": "Auto Edit",
-      "tooltip": "Codex approval_policy=auto-edit – automatically applies file patches, still asks before shell commands.",
-      "description": "Auto-create and edit files via apply_patch while keeping command approvals."
+      "tooltip": "Codex approval_policy=on-request – asks for approval when needed",
+      "description": "Balanced option. Allows normal editing flow while still requiring approvals when needed."
     },
     "bypassPermissions": {
       "label": "Full Auto",

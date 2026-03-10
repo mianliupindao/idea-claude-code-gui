@@ -286,19 +286,14 @@ export const CODEX_MODELS: ModelInfo[] = [
     description: 'Latest frontier agentic coding model with enhanced capabilities.',
   },
   {
-    id: 'gpt-5.3',
-    label: 'gpt-5.3',
-    description: 'Latest frontier model with significant improvements.',
+    id: 'gpt-5.4',
+    label: 'gpt-5.4',
+    description: 'Latest frontier model with enhanced capabilities.',
   },
   {
     id: 'gpt-5.2-codex',
     label: 'gpt-5.2-codex',
     description: 'Latest frontier agentic coding model.',
-  },
-  {
-    id: 'gpt-5.2',
-    label: 'gpt-5.2',
-    description: 'Latest frontier model with improvements across knowledge.',
   },
   {
     id: 'gpt-5.1-codex-max',

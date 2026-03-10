@@ -48,8 +48,12 @@ export function ServerCard({
 }: ServerCardProps) {
   const statusInfo = getServerStatusInfo(server, serverStatus);
   const status = statusInfo?.status;
+  const effectiveStatus: McpServerStatusInfo['status'] | undefined =
+    status === 'pending' && (toolsInfo?.tools?.length ?? 0) > 0
+      ? 'connected'
+      : status;
   const enabled = isServerEnabled(server, isCodexMode);
-  const isConnected = statusInfo?.status === 'connected';
+  const isConnected = effectiveStatus === 'connected';
 
   return (
     <div
@@ -66,10 +70,10 @@ export function ServerCard({
           {/* Connection status indicator */}
           <span
             className="status-indicator"
-            style={{ color: getStatusColor(server, status, isCodexMode) }}
-            title={getStatusText(server, status, isCodexMode, t)}
+            style={{ color: getStatusColor(server, effectiveStatus, isCodexMode) }}
+            title={getStatusText(server, effectiveStatus, isCodexMode, t)}
           >
-            <span className={`codicon ${getStatusIcon(server, status, isCodexMode)}`}></span>
+            <span className={`codicon ${getStatusIcon(server, effectiveStatus, isCodexMode)}`}></span>
           </span>
         </div>
         <div className="header-right-section" onClick={(e) => e.stopPropagation()}>
@@ -126,10 +130,10 @@ export function ServerCard({
               <span className="info-label">{t('mcp.connectionStatus')}:</span>
               <span
                 className="info-value status-value"
-                style={{ color: getStatusColor(server, statusInfo?.status, isCodexMode) }}
+                style={{ color: getStatusColor(server, effectiveStatus, isCodexMode) }}
               >
-                <span className={`codicon ${getStatusIcon(server, statusInfo?.status, isCodexMode)}`}></span>
-                {' '}{getStatusText(server, statusInfo?.status, isCodexMode, t)}
+                <span className={`codicon ${getStatusIcon(server, effectiveStatus, isCodexMode)}`}></span>
+                {' '}{getStatusText(server, effectiveStatus, isCodexMode, t)}
               </span>
             </div>
             {statusInfo?.serverInfo && (

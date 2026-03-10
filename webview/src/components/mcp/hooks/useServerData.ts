@@ -87,19 +87,6 @@ export function useServerData({
 
   // Load server tools list
   const loadServerTools = useCallback((server: McpServer, forceRefresh = false) => {
-    // Tool listing not supported in Codex mode
-    if (isCodexMode) {
-      setServerTools(prev => ({
-        ...prev,
-        [server.id]: {
-          tools: [],
-          loading: false,
-          error: 'Tool listing not supported in Codex mode'
-        }
-      }));
-      return;
-    }
-
     // Check cache (unless force refresh)
     if (!forceRefresh) {
       const cachedTools = readToolsCache(server.id, cacheKeys);
@@ -139,11 +126,11 @@ export function useServerData({
       'info',
       undefined,
       server.name || server.id,
-      `get_mcp_server_tools request to backend`
+      `get_${messagePrefix}mcp_server_tools request to backend`
     );
 
-    sendToJava('get_mcp_server_tools', { serverId: server.id, forceRefresh });
-  }, [isCodexMode, cacheKeys, t, onLog]);
+    sendToJava(`get_${messagePrefix}mcp_server_tools`, { serverId: server.id, forceRefresh });
+  }, [cacheKeys, messagePrefix, t, onLog]);
 
   // Initialization and data loading
   useEffect(() => {

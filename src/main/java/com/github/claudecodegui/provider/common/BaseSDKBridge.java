@@ -116,6 +116,13 @@ public abstract class BaseSDKBridge {
     }
 
     /**
+     * Sets the current bridge session ID for permission service routing alignment.
+     */
+    public void setSessionId(String sessionId) {
+        envConfigurator.setSessionId(sessionId);
+    }
+
+    /**
      * Interrupt a channel.
      */
     public void interruptChannel(String channelId) {

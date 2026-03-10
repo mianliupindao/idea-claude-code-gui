@@ -5,6 +5,7 @@ import com.github.claudecodegui.service.RunConfigMonitorService;
 import com.github.claudecodegui.terminal.TerminalMonitorService;
 import com.github.claudecodegui.util.EditorFileUtils;
 import com.github.claudecodegui.util.IgnoreRuleMatcher;
+import com.github.claudecodegui.util.PathUtils;
 import com.github.claudecodegui.util.PlatformUtils;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -12,7 +13,10 @@ import com.intellij.ide.BrowserUtil;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.editor.ScrollType;
 import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.fileEditor.impl.EditorHistoryManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.VirtualFile;
@@ -441,7 +445,7 @@ public class FileHandler extends BaseMessageHandler {
      * Supports file paths with line numbers: file.txt:100 or file.txt:100-200.
      */
     private void handleOpenFile(String filePath) {
-        LOG.info("请求打开文件: " + filePath);
+        LOG.info("Open file request: " + filePath);
 
         // First process file path parsing on a regular thread (no VFS operations involved)
         CompletableFuture.runAsync(() -> {
@@ -449,6 +453,7 @@ public class FileHandler extends BaseMessageHandler {
                 // Parse file path and line number
                 final String[] parsedPath = {filePath};
                 final int[] parsedLineNumber = {-1};
+                final int[] parsedEndLineNumber = {-1};
 
                 // Detect and extract line number (format: file.txt:100 or file.txt:100-200)
                 int colonIndex = filePath.lastIndexOf(':');
@@ -457,36 +462,49 @@ public class FileHandler extends BaseMessageHandler {
                     // Check if after the colon is a line number (may include a range, e.g. 100-200)
                     if (afterColon.matches("\\d+(-\\d+)?")) {
                         parsedPath[0] = filePath.substring(0, colonIndex);
-                        // Extract start line number
                         int dashIndex = afterColon.indexOf('-');
-                        String lineStr = dashIndex > 0 ? afterColon.substring(0, dashIndex) : afterColon;
+                        String startLineStr = dashIndex > 0 ? afterColon.substring(0, dashIndex) : afterColon;
+                        String endLineStr = dashIndex > 0 ? afterColon.substring(dashIndex + 1) : null;
                         try {
-                            parsedLineNumber[0] = Integer.parseInt(lineStr);
-                            LOG.info("检测到行号: " + parsedLineNumber[0]);
+                            parsedLineNumber[0] = Integer.parseInt(startLineStr);
+                            if (endLineStr != null && !endLineStr.isBlank()) {
+                                parsedEndLineNumber[0] = Integer.parseInt(endLineStr);
+                                LOG.info("Detected line range: " + parsedLineNumber[0] + "-" + parsedEndLineNumber[0]);
+                            } else {
+                                LOG.info("Detected line number: " + parsedLineNumber[0]);
+                            }
                         } catch (NumberFormatException e) {
-                            LOG.warn("解析行号失败: " + lineStr);
+                            LOG.warn("Failed to parse line number: " + afterColon);
                         }
                     }
                 }
 
                 final String actualPath = parsedPath[0];
                 final int lineNumber = parsedLineNumber[0];
+                final int endLineNumber = parsedEndLineNumber[0];
 
                 File file = new File(actualPath);
+                if (!file.exists() && PlatformUtils.isWindows()) {
+                    String convertedPath = PathUtils.convertMsysToWindowsPath(actualPath);
+                    if (!convertedPath.equals(actualPath)) {
+                        LOG.info("Detected MSYS2 path, converted to Windows path: " + convertedPath);
+                        file = new File(convertedPath);
+                    }
+                }
 
                 // If file does not exist and is a relative path, try resolving relative to the project root
                 if (!file.exists() && !file.isAbsolute() && context.getProject().getBasePath() != null) {
                     File projectFile = new File(context.getProject().getBasePath(), actualPath);
-                    LOG.info("尝试相对于项目根目录解析: " + projectFile.getAbsolutePath());
+                    LOG.info("Trying to resolve relative to project root: " + projectFile.getAbsolutePath());
                     if (projectFile.exists()) {
                         file = projectFile;
                     }
                 }
 
                 if (!file.exists()) {
-                    LOG.warn("文件不存在: " + actualPath);
+                    LOG.warn("File not found: " + actualPath);
                     ApplicationManager.getApplication().invokeLater(() -> {
-                        callJavaScript("addErrorMessage", escapeJs("无法打开文件: 当前文件不存在 (" + actualPath + ")"));
+                        callJavaScript("addErrorMessage", escapeJs("Cannot open file: file does not exist (" + actualPath + ")"));
                     }, ModalityState.nonModal());
                     return;
                 }
@@ -495,37 +513,57 @@ public class FileHandler extends BaseMessageHandler {
 
                 // Use utility method to asynchronously refresh and find the file
                 EditorFileUtils.refreshAndFindFileAsync(finalFile, virtualFile -> {
-                    // File found successfully, open in editor
-                    FileEditorManager.getInstance(context.getProject()).openFile(virtualFile, true);
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        if (context.getProject().isDisposed() || !virtualFile.isValid()) {
+                            return;
+                        }
 
-                    // If a line number is present, navigate to the specified line
-                    if (lineNumber > 0) {
-                        ApplicationManager.getApplication().invokeLater(() -> {
-                            com.intellij.openapi.editor.Editor editor = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(context.getProject()).getSelectedTextEditor();
-                            if (editor != null && editor.getDocument().getTextLength() > 0) {
-                                // Line numbers are 0-based internally, user input is 1-based
-                                int zeroBasedLine = Math.max(0, lineNumber - 1);
+                        Editor editor;
+                        if (lineNumber > 0) {
+                            OpenFileDescriptor descriptor = new OpenFileDescriptor(context.getProject(), virtualFile);
+                            editor = FileEditorManager.getInstance(context.getProject()).openTextEditor(descriptor, true);
+
+                            if (editor != null) {
                                 int lineCount = editor.getDocument().getLineCount();
-                                if (zeroBasedLine < lineCount) {
-                                    int offset = editor.getDocument().getLineStartOffset(zeroBasedLine);
-                                    editor.getCaretModel().moveToOffset(offset);
-                                    editor.getScrollingModel().scrollToCaret(com.intellij.openapi.editor.ScrollType.CENTER);
-                                    LOG.info("跳转到第 " + lineNumber + " 行");
-                                } else {
-                                    LOG.warn("行号 " + lineNumber + " 超出范围（文件共 " + lineCount + " 行）");
-                                }
-                            }
-                        }, ModalityState.nonModal());
-                    }
+                                if (lineCount > 0) {
+                                    int zeroBasedLine = Math.min(Math.max(0, lineNumber - 1), lineCount - 1);
+                                    int startOffset = editor.getDocument().getLineStartOffset(zeroBasedLine);
+                                    editor.getCaretModel().moveToOffset(startOffset);
 
-                    LOG.info("成功打开文件: " + filePath);
+                                    if (endLineNumber >= lineNumber) {
+                                        int zeroBasedEndLine = Math.min(endLineNumber - 1, lineCount - 1);
+                                        int endOffset = editor.getDocument().getLineEndOffset(zeroBasedEndLine);
+                                        editor.getSelectionModel().setSelection(startOffset, endOffset);
+                                        LOG.info("Navigated and selected line range: " + lineNumber + "-" + endLineNumber);
+                                    } else {
+                                        if (endLineNumber > 0) {
+                                            LOG.warn("Invalid line range: " + lineNumber + "-" + endLineNumber);
+                                        }
+                                        editor.getSelectionModel().removeSelection();
+                                        LOG.info("Navigated to line " + lineNumber);
+                                    }
+
+                                    editor.getScrollingModel().scrollToCaret(ScrollType.CENTER);
+                                } else {
+                                    LOG.warn("File is empty, cannot navigate to line " + lineNumber);
+                                }
+                            } else {
+                                LOG.warn("Cannot open text editor: " + virtualFile.getPath());
+                                FileEditorManager.getInstance(context.getProject()).openFile(virtualFile, true);
+                            }
+                        } else {
+                            FileEditorManager.getInstance(context.getProject()).openFile(virtualFile, true);
+                        }
+
+                        LOG.info("Successfully opened file: " + filePath);
+                    }, ModalityState.nonModal());
                 }, () -> {
                     // Failure callback
-                    LOG.error("最终无法获取 VirtualFile: " + filePath);
-                    callJavaScript("addErrorMessage", escapeJs("无法打开文件: " + filePath));
+                    LOG.error("Failed to get VirtualFile: " + filePath);
+                    callJavaScript("addErrorMessage", escapeJs("Cannot open file: " + filePath));
                 });
             } catch (Exception e) {
-                LOG.error("打开文件失败: " + e.getMessage(), e);
+                LOG.error("Failed to open file: " + e.getMessage(), e);
             }
         });
     }
@@ -538,7 +576,7 @@ public class FileHandler extends BaseMessageHandler {
             try {
                 BrowserUtil.browse(url);
             } catch (Exception e) {
-                LOG.error("无法打开浏览器: " + e.getMessage(), e);
+                LOG.error("Cannot open browser: " + e.getMessage(), e);
             }
         });
     }

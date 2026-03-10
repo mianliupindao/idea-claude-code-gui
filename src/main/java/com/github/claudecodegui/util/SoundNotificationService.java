@@ -77,6 +77,11 @@ public class SoundNotificationService {
                     return;
                 }
 
+                if (settings.getSoundOnlyWhenUnfocused() && ApplicationManager.getApplication().isActive()) {
+                    LOG.debug("[SoundNotification] IDE window is focused, skipping notification sound");
+                    return;
+                }
+
                 String selectedSound = settings.getSelectedSound();
                 playBySelection(selectedSound, settings.getCustomSoundPath());
             } catch (Exception e) {
@@ -171,48 +176,6 @@ public class SoundNotificationService {
         return normalized;
     }
 
-    private boolean isWindows() {
-        return System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win");
-    }
-
-    private boolean pathEquals(String a, String b) {
-        if (isWindows()) {
-            return a.equalsIgnoreCase(b);
-        }
-        return a.equals(b);
-    }
-
-    private boolean pathStartsWith(String path, String prefix) {
-        if (isWindows()) {
-            return path.toLowerCase(Locale.ROOT).startsWith(prefix.toLowerCase(Locale.ROOT));
-        }
-        return path.startsWith(prefix);
-    }
-
-    /**
-     * Check if the file path is safe (no path traversal, must be under user home directory).
-     */
-    private boolean isPathSafe(String filePath) {
-        try {
-            String normalizedPath = normalizeSoundPath(filePath);
-            if (normalizedPath == null || normalizedPath.isEmpty()) {
-                return false;
-            }
-            if (normalizedPath.contains("..")) {
-                return false;
-            }
-
-            File file = new File(normalizedPath);
-            String canonical = file.getCanonicalPath();
-            String userHome = new File(PlatformUtils.getHomeDirectory()).getCanonicalPath();
-
-            // Only allow files under user home directory to prevent arbitrary file access
-            return pathStartsWith(canonical, userHome);
-        } catch (java.io.IOException e) {
-            return false;
-        }
-    }
-
     /**
      * 从文件播放音频
      */
@@ -220,11 +183,6 @@ public class SoundNotificationService {
         String normalizedPath = normalizeSoundPath(rawPath);
         if (normalizedPath == null || normalizedPath.isEmpty()) {
             LOG.warn("[SoundNotification] Custom sound path is empty");
-            return;
-        }
-
-        if (!isPathSafe(normalizedPath)) {
-            LOG.warn("[SoundNotification] Blocked unsafe file path: " + normalizedPath);
             return;
         }
 
@@ -316,10 +274,6 @@ public class SoundNotificationService {
         String normalizedPath = normalizeSoundPath(filePath);
         if (normalizedPath == null || normalizedPath.isEmpty()) {
             return new ValidationResult(true, null); // 空路径表示使用默认声音
-        }
-
-        if (!isPathSafe(normalizedPath)) {
-            return new ValidationResult(false, "Invalid file path");
         }
 
         File file = new File(normalizedPath);

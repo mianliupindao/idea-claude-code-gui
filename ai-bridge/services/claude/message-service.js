@@ -4,13 +4,32 @@
  */
 
 // Dynamic SDK loading - loaded on demand instead of static imports
-import {
-    loadClaudeSdk,
-    loadAnthropicSdk,
-    loadBedrockSdk,
-    isClaudeSdkAvailable
-} from '../../utils/sdk-loader.js';
+import { isClaudeSdkAvailable, loadAnthropicSdk, loadBedrockSdk, loadClaudeSdk } from '../../utils/sdk-loader.js';
 import { randomUUID } from 'crypto';
+import { existsSync } from 'fs';
+import { readFile } from 'fs/promises';
+import { join } from 'path';
+
+import {
+  getMcpServersStatus,
+  getMcpServerTools as getMcpServerToolsImpl,
+  loadMcpServersConfig
+} from './mcp-status/index.js';
+
+import { isCustomBaseUrl, loadClaudeSettings, setupApiKey } from '../../config/api-config.js';
+import { getClaudeDir, getRealHomeDir, selectWorkingDirectory } from '../../utils/path-utils.js';
+import {
+  mapModelIdToSdkName,
+  resolveModelFromSettings,
+  setModelEnvironmentVariables
+} from '../../utils/model-utils.js';
+import { AsyncStream } from '../../utils/async-stream.js';
+import { canUseTool, requestPlanApproval } from '../../permission-handler.js';
+import { loadSessionHistory, persistJsonlMessage } from './session-service.js';
+import { buildContentBlocks, loadAttachments } from './attachment-service.js';
+import { buildIDEContextPrompt } from '../system-prompts.js';
+import { buildQuickFixPrompt } from '../quickfix-prompts.js';
+import { emitAccumulatedUsage, mergeUsage } from '../../utils/usage-utils.js';
 
 // SDK cache
 let claudeSdk = null;
@@ -21,93 +40,110 @@ let bedrockSdk = null;
  * Ensure Claude SDK is loaded
  */
 async function ensureClaudeSdk() {
-    if (!claudeSdk) {
-        if (!isClaudeSdkAvailable()) {
-            const error = new Error('Claude Code SDK not installed. Please install via Settings > Dependencies.');
-            error.code = 'SDK_NOT_INSTALLED';
-            error.provider = 'claude';
-            throw error;
-        }
-        claudeSdk = await loadClaudeSdk();
+  if (!claudeSdk) {
+    if (!isClaudeSdkAvailable()) {
+      const error = new Error('Claude Code SDK not installed. Please install via Settings > Dependencies.');
+      error.code = 'SDK_NOT_INSTALLED';
+      error.provider = 'claude';
+      throw error;
     }
-    return claudeSdk;
+    claudeSdk = await loadClaudeSdk();
+  }
+  return claudeSdk;
 }
 
 /**
  * Ensure Anthropic SDK is loaded
  */
 async function ensureAnthropicSdk() {
-    if (!anthropicSdk) {
-        anthropicSdk = await loadAnthropicSdk();
-    }
-    return anthropicSdk;
+  if (!anthropicSdk) {
+    anthropicSdk = await loadAnthropicSdk();
+  }
+  return anthropicSdk;
 }
 
 /**
  * Ensure Bedrock SDK is loaded
  */
 async function ensureBedrockSdk() {
-    if (!bedrockSdk) {
-        bedrockSdk = await loadBedrockSdk();
-    }
-    return bedrockSdk;
+  if (!bedrockSdk) {
+    bedrockSdk = await loadBedrockSdk();
+  }
+  return bedrockSdk;
 }
-import { existsSync } from 'fs';
-import { readFile } from 'fs/promises';
-import { join } from 'path';
-
-import { getMcpServersStatus, loadMcpServersConfig, getMcpServerTools as getMcpServerToolsImpl } from './mcp-status/index.js';
-
-import { setupApiKey, isCustomBaseUrl, loadClaudeSettings } from '../../config/api-config.js';
-import { selectWorkingDirectory, getRealHomeDir, getClaudeDir } from '../../utils/path-utils.js';
-import { mapModelIdToSdkName, setModelEnvironmentVariables, resolveModelFromSettings } from '../../utils/model-utils.js';
-import { AsyncStream } from '../../utils/async-stream.js';
-import { canUseTool, requestPlanApproval } from '../../permission-handler.js';
-import { persistJsonlMessage, loadSessionHistory } from './session-service.js';
-import { loadAttachments, buildContentBlocks } from './attachment-service.js';
-import { buildIDEContextPrompt } from '../system-prompts.js';
-import { buildQuickFixPrompt } from '../quickfix-prompts.js';
-import { mergeUsage, emitAccumulatedUsage } from '../../utils/usage-utils.js';
 
 // Store active query results for rewind operations
 // Key: sessionId, Value: query result object
 const activeQueryResults = new Map();
 
+// ========== Tool categories for permission control ==========
+
+// READ_ONLY tools: auto-allowed in plan mode and default mode (no side effects)
+const READ_ONLY_TOOLS = new Set([
+  'Glob',           // Find files by pattern
+  'Grep',           // Search file contents
+  'Read',           // Read files/images/PDFs
+  'WebFetch',       // Fetch URL content
+  'WebSearch',      // Search the web
+  'TodoWrite',      // Manage task checklist
+  'TaskStop',       // Stop background task
+  'TaskOutput',     // Read task output
+  'ListMcpResourcesTool',   // List MCP resources
+  'ReadMcpResourceTool',    // Read MCP resource
+  'ExitPlanMode',   // Exit plan mode (triggers approval dialog)
+]);
+
+// AUTO_ALLOW_TOOLS: Tools that are always allowed without prompting
+const AUTO_ALLOW_TOOLS = new Set([
+  'ToolSearch',       // Search/select deferred tools
+  'StructuredOutput', // Return structured JSON output
+  'EnterPlanMode',    // Enter planning mode
+  'EnterWorktree',    // Create isolated git worktree
+  'TaskCreate',       // Create a task in task list
+  'TaskGet',          // Get a task by ID
+  'TaskUpdate',       // Update a task
+  'TaskList',         // List all tasks
+  'CronCreate',       // Schedule a recurring prompt
+  'CronDelete',       // Cancel a scheduled cron job
+  'CronList',         // List active cron jobs
+]);
+
+// EDIT tools: auto-allowed in acceptEdits mode
+const EDIT_TOOLS = new Set([
+  'Edit',           // Modify file contents
+  'Write',          // Create/overwrite files
+  'NotebookEdit',   // Edit Jupyter notebook cells
+]);
+
+// EXECUTION tools: always require permission (except bypassPermissions mode)
+const EXECUTION_TOOLS = new Set([
+  'Bash',           // Execute shell commands
+]);
+
+// Tools auto-approved in acceptEdits mode (EDIT tools + safe file operations)
 const ACCEPT_EDITS_AUTO_APPROVE_TOOLS = new Set([
-  'Write',
-  'Edit',
-  'MultiEdit',
+  ...EDIT_TOOLS,
+  'MultiEdit',      // Batch edit operations
   'CreateDirectory',
   'MoveFile',
   'CopyFile',
   'Rename'
 ]);
 
-// Tools allowed in plan mode (read-only tools + planning tools + ExitPlanMode)
+// Tools allowed in plan mode:
+// - All READ_ONLY tools
+// - All AUTO_ALLOW_TOOLS
+// - TodoWrite, AskUserQuestion, ExitPlanMode for planning workflow
+// - Task/Agent for exploration agents
+// - Edit/Write for plan file only (handled separately in hook)
 const PLAN_MODE_ALLOWED_TOOLS = new Set([
-  // Read-only tools
-  'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch',
-  'ListMcpResources', 'ListMcpResourcesTool',
-  'ReadMcpResource', 'ReadMcpResourceTool',
-  // Planning tools
-  'TodoWrite', 'Skill', 'TaskOutput',
-  'Task', // Allow Task for exploration agents
-  'Write', // Allow Write for writing plan files
-  'Edit', // Allow Edit in plan mode (still gated by permission prompt)
-  'Bash', // Allow Bash in plan mode (still gated by permission prompt)
-  'AskUserQuestion', // Allow AskUserQuestion for asking user during planning
-  'EnterPlanMode', // Allow EnterPlanMode
-  'ExitPlanMode', // Allow ExitPlanMode to exit plan mode
-  // MCP tools
-  'mcp__ace-tool__search_context',
-  'mcp__context7__resolve-library-id',
-  'mcp__context7__query-docs',
-  'mcp__conductor__GetWorkspaceDiff',
-  'mcp__conductor__GetTerminalOutput',
-  'mcp__conductor__AskUserQuestion',
-  'mcp__conductor__DiffComment',
-  'mcp__time__get_current_time',
-  'mcp__time__convert_time'
+  ...READ_ONLY_TOOLS,
+  ...AUTO_ALLOW_TOOLS,
+  // Planning workflow tools
+  'AskUserQuestion',  // Ask user for clarification
+  'Task',             // Allow Task for exploration agents
+  'Agent',            // Agent is an alias for Task
+  'Skill',            // Allow skills during planning
 ]);
 
 // ========== Auto-retry configuration for transient API errors ==========
@@ -193,55 +229,71 @@ async function waitForClaudeProjectSessionFile(sessionId, cwd, timeoutMs = 1500,
 // Tools that require user interaction even in bypassPermissions mode
 const INTERACTIVE_TOOLS = new Set(['AskUserQuestion']);
 
+// Plan file name (matches CLI convention)
+const PLAN_FILE_NAME = 'PLAN.md';
+
+/**
+ * Check if a file path is the plan file
+ * @param {string} filePath - The file path to check
+ * @param {string} cwd - Current working directory
+ * @returns {boolean} - True if the path points to the plan file
+ */
+function isPlanFilePath(filePath, cwd) {
+  if (!filePath || typeof filePath !== 'string') return false;
+  const workingDir = cwd || process.cwd();
+  // Normalize paths for comparison
+  const normalizedPath = filePath.replace(/\\/g, '/').toLowerCase();
+  const normalizedCwd = workingDir.replace(/\\/g, '/').toLowerCase();
+  // Check if the path ends with PLAN.md (in project root)
+  if (normalizedPath.endsWith('/plan.md') || normalizedPath === 'plan.md') {
+    // Verify it's in the project root
+    if (normalizedPath.startsWith(normalizedCwd)) return true;
+    if (!normalizedPath.includes('/')) return true; // Relative path like "PLAN.md"
+  }
+  return false;
+}
+
 function shouldAutoApproveTool(permissionMode, toolName) {
   if (!toolName) return false;
+  // Tools with checkPermissions returning "allow" are always auto-approved
+  if (AUTO_ALLOW_TOOLS.has(toolName)) return true;
   // Interactive tools always need user input, never auto-approve
   if (INTERACTIVE_TOOLS.has(toolName)) return false;
+  // bypassPermissions: auto-approve all tools except interactive ones
   if (permissionMode === 'bypassPermissions') return true;
+  // acceptEdits: auto-approve EDIT tools
   if (permissionMode === 'acceptEdits') return ACCEPT_EDITS_AUTO_APPROVE_TOOLS.has(toolName);
   return false;
 }
 
-function createPreToolUseHook(permissionMode) {
+/**
+ * Create PreToolUse hook for permission control
+ * @param {string} permissionMode - The permission mode (default, plan, acceptEdits, bypassPermissions, dontAsk)
+ * @param {string} cwd - Working directory (for plan file detection)
+ * @returns {Function} - PreToolUse hook function
+ */
+function createPreToolUseHook(permissionMode, cwd = null) {
   let currentPermissionMode = (!permissionMode || permissionMode === '') ? 'default' : permissionMode;
+  const workingDirectory = cwd || process.cwd();
 
   return async (input) => {
     const toolName = input?.tool_name;
+    const toolInput = input?.tool_input;
     console.log('[PERM_DEBUG] PreToolUse hook called:', toolName, 'mode:', currentPermissionMode);
 
-    // Handle plan mode: allow read-only tools, special handling for ExitPlanMode
+    // ========== PLAN MODE ==========
     if (currentPermissionMode === 'plan') {
+      // AskUserQuestion: defer to canUseTool for collecting user answers
       if (toolName === 'AskUserQuestion') {
-        console.log('[PERM_DEBUG] AskUserQuestion called in plan mode, deferring to canUseTool for answers...');
+        console.log('[PERM_DEBUG] AskUserQuestion called in plan mode, deferring to canUseTool...');
         return { decision: 'approve' };
       }
 
-      // Edit / Bash: allow in plan mode but still ask user permission (same as default mode behavior)
-      if (toolName === 'Edit' || toolName === 'Bash') {
-        console.log(`[PERM_DEBUG] ${toolName} called in plan mode, requesting permission...`);
-        try {
-          const result = await canUseTool(toolName, input?.tool_input);
-          if (result?.behavior === 'allow') {
-            return { decision: 'approve', updatedInput: result.updatedInput ?? input?.tool_input };
-          }
-          return {
-            decision: 'block',
-            reason: result?.message || 'Permission denied'
-          };
-        } catch (error) {
-          console.error(`[PERM_DEBUG] ${toolName} permission error:`, error?.message);
-          return {
-            decision: 'block',
-            reason: 'Permission check failed: ' + (error?.message || String(error))
-          };
-        }
-      }
-
-      // Special handling for ExitPlanMode: request plan approval from user
+      // ExitPlanMode: request plan approval from user
       if (toolName === 'ExitPlanMode') {
         console.log('[PERM_DEBUG] ExitPlanMode called in plan mode, requesting approval...');
         try {
-          const result = await requestPlanApproval(input?.tool_input);
+          const result = await requestPlanApproval(toolInput);
           if (result?.approved) {
             const nextMode = result.targetMode || 'default';
             currentPermissionMode = nextMode;
@@ -249,7 +301,7 @@ function createPreToolUseHook(permissionMode) {
             return {
               decision: 'approve',
               updatedInput: {
-                ...input.tool_input,
+                ...toolInput,
                 approved: true,
                 targetMode: nextMode
               }
@@ -269,14 +321,74 @@ function createPreToolUseHook(permissionMode) {
         }
       }
 
-      // Allow read-only tools in plan mode
+      // Edit/Write on plan file: ALLOW in plan mode (plan file exception)
+      if (toolName === 'Edit' || toolName === 'Write') {
+        const filePath = toolInput?.file_path || toolInput?.path;
+        if (isPlanFilePath(filePath, workingDirectory)) {
+          console.log('[PERM_DEBUG] Allowing Edit/Write on plan file in plan mode:', filePath);
+          return { decision: 'approve' };
+        }
+        // Non-plan file edits in plan mode: request permission (will likely be denied)
+        console.log(`[PERM_DEBUG] ${toolName} on non-plan file in plan mode, requesting permission...`);
+        try {
+          const result = await canUseTool(toolName, toolInput);
+          if (result?.behavior === 'allow') {
+            return { decision: 'approve', updatedInput: result.updatedInput ?? toolInput };
+          }
+          return {
+            decision: 'block',
+            reason: result?.message || `Cannot edit non-plan files in plan mode. Only ${PLAN_FILE_NAME} can be edited.`
+          };
+        } catch (error) {
+          console.error(`[PERM_DEBUG] ${toolName} permission error:`, error?.message);
+          return {
+            decision: 'block',
+            reason: 'Permission check failed: ' + (error?.message || String(error))
+          };
+        }
+      }
+
+      // Bash: require explicit permission in plan mode
+      if (toolName === 'Bash') {
+        console.log('[PERM_DEBUG] Bash called in plan mode, requesting permission...');
+        try {
+          const result = await canUseTool(toolName, toolInput);
+          if (result?.behavior === 'allow') {
+            return { decision: 'approve', updatedInput: result.updatedInput ?? toolInput };
+          }
+          return {
+            decision: 'block',
+            reason: result?.message || 'Shell commands are not allowed in plan mode'
+          };
+        } catch (error) {
+          console.error('[PERM_DEBUG] Bash permission error:', error?.message);
+          return {
+            decision: 'block',
+            reason: 'Permission check failed: ' + (error?.message || String(error))
+          };
+        }
+      }
+
+      // Read-only tools: auto-allow in plan mode
       if (PLAN_MODE_ALLOWED_TOOLS.has(toolName)) {
         console.log('[PERM_DEBUG] Allowing read-only tool in plan mode:', toolName);
         return { decision: 'approve' };
       }
 
-      // Also allow MCP tools that start with 'mcp__' and are read-only
-      if (toolName?.startsWith('mcp__') && !toolName.includes('Write') && !toolName.includes('Edit')) {
+      // MCP tools that are read-only: allow in plan mode
+      if (toolName?.startsWith('mcp__')) {
+        // Heuristic: MCP tools with "read", "list", "get", "search", "query" are likely read-only
+        const readOnlyPatterns = ['read', 'list', 'get', 'search', 'query', 'resolve', 'fetch'];
+        const writePatterns = ['write', 'edit', 'create', 'delete', 'update', 'execute', 'run'];
+        const toolLower = toolName.toLowerCase();
+
+        if (writePatterns.some(p => toolLower.includes(p))) {
+          console.log('[PERM_DEBUG] Blocking write MCP tool in plan mode:', toolName);
+          return {
+            decision: 'block',
+            reason: `MCP tool "${toolName}" writes to system, not allowed in plan mode`
+          };
+        }
         console.log('[PERM_DEBUG] Allowing MCP read tool in plan mode:', toolName);
         return { decision: 'approve' };
       }
@@ -285,23 +397,48 @@ function createPreToolUseHook(permissionMode) {
       console.log('[PERM_DEBUG] Blocking tool in plan mode:', toolName);
       return {
         decision: 'block',
-        reason: `Tool "${toolName}" is not allowed in plan mode. Only read-only tools are permitted. Use ExitPlanMode to exit plan mode.`
+        reason: `Tool "${toolName}" is not allowed in plan mode. Only read-only tools and ${PLAN_FILE_NAME} edits are permitted. Use ExitPlanMode to exit plan mode.`
       };
     }
 
+    // ========== DONT_ASK MODE ==========
+    if (currentPermissionMode === 'dontAsk') {
+      // In dontAsk mode, deny any tool that would require a permission prompt
+      // unless it's auto-approved (read-only tools or tools with checkPermissions returning "allow")
+      if (READ_ONLY_TOOLS.has(toolName) || AUTO_ALLOW_TOOLS.has(toolName)) {
+        console.log('[PERM_DEBUG] Allowing auto-approved tool in dontAsk mode:', toolName);
+        return { decision: 'approve' };
+      }
+      // Interactive tools still work in dontAsk mode
+      if (toolName === 'AskUserQuestion') {
+        return { decision: 'approve' };
+      }
+      // All other tools are denied without prompting
+      console.log('[PERM_DEBUG] Denying tool in dontAsk mode (no prompt):', toolName);
+      return {
+        decision: 'block',
+        reason: `Tool "${toolName}" requires permission but dontAsk mode prevents prompts. Pre-approve the tool or switch modes.`
+      };
+    }
+
+    // ========== DEFAULT / ACCEPT_EDITS / BYPASS_PERMISSIONS MODES ==========
+
+    // AskUserQuestion: defer to canUseTool for collecting user answers
     if (toolName === 'AskUserQuestion') {
-      console.log('[PERM_DEBUG] AskUserQuestion encountered in PreToolUse, deferring to canUseTool for answers...');
+      console.log('[PERM_DEBUG] AskUserQuestion encountered in PreToolUse, deferring to canUseTool...');
       return { decision: 'approve' };
     }
 
+    // Auto-approve based on mode
     if (shouldAutoApproveTool(currentPermissionMode, toolName)) {
       console.log('[PERM_DEBUG] Auto-approve tool:', toolName, 'mode:', currentPermissionMode);
       return { decision: 'approve' };
     }
 
+    // Default: request permission via canUseTool
     console.log('[PERM_DEBUG] Calling canUseTool...');
     try {
-      const result = await canUseTool(toolName, input?.tool_input);
+      const result = await canUseTool(toolName, toolInput);
       console.log('[PERM_DEBUG] canUseTool returned:', result?.behavior);
 
       if (result?.behavior === 'allow') {
@@ -365,18 +502,19 @@ function truncateErrorContent(content, maxLen = 1000) {
 
 /**
  * Emit [USAGE] tag for Java-side token tracking.
- * NOTE: The console.log below is intentional IPC — the Java backend parses
- * stdout lines starting with "[USAGE]" to extract token metrics.
- * This follows the same pattern used by other IPC tags (e.g. [TOOL_RESULT]).
+ * NOTE: Uses process.stdout.write for consistent buffering with other IPC messages.
+ * The Java backend parses stdout lines starting with "[USAGE]" to extract token metrics.
  */
 function emitUsageTag(msg) {
   if (msg.type === 'assistant' && msg.message?.usage) {
-    const { input_tokens = 0, output_tokens = 0,
-            cache_creation_input_tokens = 0, cache_read_input_tokens = 0 } = msg.message.usage;
+    const {
+      input_tokens = 0, output_tokens = 0,
+      cache_creation_input_tokens = 0, cache_read_input_tokens = 0
+    } = msg.message.usage;
     // Intentional stdout IPC — parsed by Java backend (see ClaudeMessageHandler.parseUsageTag)
-    console.log('[USAGE]', JSON.stringify({
+    process.stdout.write('[USAGE] ' + JSON.stringify({
       input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
-    }));
+    }) + '\n');
   }
 }
 
@@ -427,21 +565,21 @@ function truncateToolResultBlock(block) {
  * @param {Error} error - The error object to build payload from
  * @returns {Object} Error payload with error message and details
  */
-	function buildConfigErrorPayload(error) {
-			  try {
-			    const rawError = error?.message || String(error);
-			    const errorName = error?.name || 'Error';
-			    const errorStack = error?.stack || null;
+function buildConfigErrorPayload(error) {
+  try {
+    const rawError = error?.message || String(error);
+    const errorName = error?.name || 'Error';
+    const errorStack = error?.stack || null;
 
-			    // Previously this handled AbortError / "Claude Code process aborted by user" with a timeout-specific message.
-			    // Now we use unified error handling, but still record whether it's a timeout/abort error in details for debugging.
-			    const isAbortError =
-			      errorName === 'AbortError' ||
-			      rawError.includes('Claude Code process aborted by user') ||
-			      rawError.includes('The operation was aborted');
+    // Previously this handled AbortError / "Claude Code process aborted by user" with a timeout-specific message.
+    // Now we use unified error handling, but still record whether it's a timeout/abort error in details for debugging.
+    const isAbortError =
+      errorName === 'AbortError' ||
+      rawError.includes('Claude Code process aborted by user') ||
+      rawError.includes('The operation was aborted');
 
-		    const settings = loadClaudeSettings();
-	    const env = settings?.env || {};
+    const settings = loadClaudeSettings();
+    const env = settings?.env || {};
 
     const settingsApiKey =
       env.ANTHROPIC_AUTH_TOKEN !== undefined && env.ANTHROPIC_AUTH_TOKEN !== null
@@ -474,42 +612,42 @@ function truncateToolResultBlock(block) {
       ? `${rawKey.substring(0, 10)}... (length: ${rawKey.length} chars)`
       : 'Not configured (value is empty or missing)';
 
-		    let baseUrl = settingsBaseUrl || 'https://api.anthropic.com';
-		    let baseUrlSource;
-		    if (settingsBaseUrl) {
-		      baseUrlSource = '~/.claude/settings.json: ANTHROPIC_BASE_URL';
-		    } else {
-		      baseUrlSource = 'Default (https://api.anthropic.com)';
-		    }
+    let baseUrl = settingsBaseUrl || 'https://api.anthropic.com';
+    let baseUrlSource;
+    if (settingsBaseUrl) {
+      baseUrlSource = '~/.claude/settings.json: ANTHROPIC_BASE_URL';
+    } else {
+      baseUrlSource = 'Default (https://api.anthropic.com)';
+    }
 
-		    const heading = isAbortError
-		      ? 'Claude Code was interrupted (possibly response timeout or user cancellation):'
-		      : 'Claude Code error:';
+    const heading = isAbortError
+      ? 'Claude Code was interrupted (possibly response timeout or user cancellation):'
+      : 'Claude Code error:';
 
-		    const userMessage = [
-	      heading,
-	      `- Error message: ${truncateString(rawError)}`,
-	      `- Current API Key source: ${keySource}`,
-	      `- Current API Key preview: ${keyPreview}`,
-	      `- Current Base URL: ${baseUrl} (source: ${baseUrlSource})`,
-	      `- Tip: CLI can read from environment variables or settings.json; this plugin only supports reading from settings.json to avoid issues. You can configure it in the plugin's top-right Settings > Provider Management`,
-	      ''
-	    ].join('\n');
+    const userMessage = [
+      heading,
+      `- Error message: ${truncateString(rawError)}`,
+      `- Current API Key source: ${keySource}`,
+      `- Current API Key preview: ${keyPreview}`,
+      `- Current Base URL: ${baseUrl} (source: ${baseUrlSource})`,
+      `- Tip: CLI can read from environment variables or settings.json; this plugin only supports reading from settings.json to avoid issues. You can configure it in the plugin's top-right Settings > Provider Management`,
+      ''
+    ].join('\n');
 
-	    return {
-	      success: false,
-	      error: userMessage,
-	      details: {
-	        rawError,
-	        errorName,
-	        errorStack,
-	        isAbortError,
-	        keySource,
-	        keyPreview,
-	        baseUrl,
-	        baseUrlSource
-	      }
-	    };
+    return {
+      success: false,
+      error: userMessage,
+      details: {
+        rawError,
+        errorName,
+        errorStack,
+        isAbortError,
+        keySource,
+        keyPreview,
+        baseUrl,
+        baseUrlSource
+      }
+    };
   } catch (innerError) {
     const rawError = error?.message || String(error);
     return {
@@ -548,6 +686,7 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
   let streamingEnabled = false;
   let streamStarted = false;
   let streamEnded = false;
+  let accumulatedUsage = null;
   try {
     process.env.CLAUDE_CODE_ENTRYPOINT = process.env.CLAUDE_CODE_ENTRYPOINT || 'sdk-ts';
     console.log('[DEBUG] CLAUDE_CODE_ENTRYPOINT:', process.env.CLAUDE_CODE_ENTRYPOINT);
@@ -605,27 +744,27 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
     console.log('[DEBUG] Model resolved for API:', model, '->', resolvedModel);
     setModelEnvironmentVariables(resolvedModel, model);
 
-	    // Build systemPrompt.append content (for adding opened files context and agent prompt)
-	    // Use the unified prompt management module to build IDE context prompt (including agent prompt)
-	    console.log('[Agent] message-service.sendMessage received agentPrompt:', agentPrompt ? `✓ (${agentPrompt.length} chars)` : '✗ null');
-	    let systemPromptAppend;
-	    if (openedFiles && openedFiles.isQuickFix) {
-	      systemPromptAppend = buildQuickFixPrompt(openedFiles, message);
-	    } else {
-	      systemPromptAppend = buildIDEContextPrompt(openedFiles, agentPrompt);
-	    }
-	    console.log('[Agent] systemPromptAppend built:', systemPromptAppend ? `✓ (${systemPromptAppend.length} chars)` : '✗ empty');
+    // Build systemPrompt.append content (for adding opened files context and agent prompt)
+    // Use the unified prompt management module to build IDE context prompt (including agent prompt)
+    console.log('[Agent] message-service.sendMessage received agentPrompt:', agentPrompt ? `✓ (${agentPrompt.length} chars)` : '✗ null');
+    let systemPromptAppend;
+    if (openedFiles && openedFiles.isQuickFix) {
+      systemPromptAppend = buildQuickFixPrompt(openedFiles, message);
+    } else {
+      systemPromptAppend = buildIDEContextPrompt(openedFiles, agentPrompt);
+    }
+    console.log('[Agent] systemPromptAppend built:', systemPromptAppend ? `✓ (${systemPromptAppend.length} chars)` : '✗ empty');
 
-	    // Prepare options
-	    // Note: No longer passing pathToClaudeCodeExecutable; the SDK will use its built-in cli.js.
-	    // This avoids system CLI path issues on Windows (ENOENT errors).
-	    const effectivePermissionMode = (!permissionMode || permissionMode === '') ? 'default' : permissionMode;
-	    // Always provide canUseTool to ensure interactive tools like AskUserQuestion can receive user input
-	    const shouldUseCanUseTool = true;
-	    console.log('[PERM_DEBUG] permissionMode:', permissionMode);
-	    console.log('[PERM_DEBUG] effectivePermissionMode:', effectivePermissionMode);
-	    console.log('[PERM_DEBUG] shouldUseCanUseTool:', shouldUseCanUseTool);
-	    console.log('[PERM_DEBUG] canUseTool function defined:', typeof canUseTool);
+    // Prepare options
+    // Note: No longer passing pathToClaudeCodeExecutable; the SDK will use its built-in cli.js.
+    // This avoids system CLI path issues on Windows (ENOENT errors).
+    const effectivePermissionMode = (!permissionMode || permissionMode === '') ? 'default' : permissionMode;
+    // Always provide canUseTool to ensure interactive tools like AskUserQuestion can receive user input
+    const shouldUseCanUseTool = true;
+    console.log('[PERM_DEBUG] permissionMode:', permissionMode);
+    console.log('[PERM_DEBUG] effectivePermissionMode:', effectivePermissionMode);
+    console.log('[PERM_DEBUG] shouldUseCanUseTool:', shouldUseCanUseTool);
+    console.log('[PERM_DEBUG] canUseTool function defined:', typeof canUseTool);
 
     // Read Extended Thinking configuration from settings.json (reuse `settings` loaded above)
     const alwaysThinkingEnabled = settings?.alwaysThinkingEnabled ?? true;
@@ -641,67 +780,68 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
     console.log('[STREAMING_DEBUG] settings.streamingEnabled:', settings?.streamingEnabled);
     console.log('[STREAMING_DEBUG] streamingEnabled (final):', streamingEnabled);
 
-	    // Decide whether to enable Extended Thinking based on configuration
-	    // - If alwaysThinkingEnabled is true, use the configured maxThinkingTokens value
-	    // - If alwaysThinkingEnabled is false, don't set maxThinkingTokens (let SDK use default behavior)
-	    const maxThinkingTokens = alwaysThinkingEnabled ? configuredMaxThinkingTokens : undefined;
+    // Decide whether to enable Extended Thinking based on configuration
+    // - If alwaysThinkingEnabled is true, use the configured maxThinkingTokens value
+    // - If alwaysThinkingEnabled is false, don't set maxThinkingTokens (let SDK use default behavior)
+    const maxThinkingTokens = alwaysThinkingEnabled ? configuredMaxThinkingTokens : undefined;
 
-	    console.log('[THINKING_DEBUG] alwaysThinkingEnabled:', alwaysThinkingEnabled);
-	    console.log('[THINKING_DEBUG] maxThinkingTokens:', maxThinkingTokens);
+    console.log('[THINKING_DEBUG] alwaysThinkingEnabled:', alwaysThinkingEnabled);
+    console.log('[THINKING_DEBUG] maxThinkingTokens:', maxThinkingTokens);
 
-	    const options = {
-	      cwd: workingDirectory,
-	      permissionMode: effectivePermissionMode,
-	      model: sdkModelName,
-	      maxTurns: 100,
-	      // Enable file checkpointing for rewind feature
-	      enableFileCheckpointing: true,
-	      // Extended Thinking config (controlled by alwaysThinkingEnabled in settings.json)
-	      // Thinking content is output via the [THINKING] tag for frontend display
-	      ...(maxThinkingTokens !== undefined && { maxThinkingTokens }),
-	      // Streaming config: enable includePartialMessages to receive incremental content
-	      // When streamingEnabled is true, the SDK returns partial messages with incremental content
-	      ...(streamingEnabled && { includePartialMessages: true }),
-	      additionalDirectories: Array.from(
-	        new Set(
-	          [workingDirectory, process.env.IDEA_PROJECT_PATH, process.env.PROJECT_PATH].filter(Boolean)
-	        )
-	      ),
-	      canUseTool: shouldUseCanUseTool ? canUseTool : undefined,
-	      hooks: {
-	        PreToolUse: [{
-	          hooks: [createPreToolUseHook(effectivePermissionMode)]
-	        }]
-	      },
-	      // Don't pass pathToClaudeCodeExecutable; SDK will use its built-in cli.js
-	      settingSources: ['user', 'project', 'local'],
-	      // Use the Claude Code preset system prompt so Claude knows the current working directory.
-	      // This is key to fixing path issues: without systemPrompt, Claude doesn't know the cwd.
-	      // If openedFiles is present, add the opened files context via the append field.
-	      systemPrompt: {
-	        type: 'preset',
-	        preset: 'claude_code',
-	        ...(systemPromptAppend && { append: systemPromptAppend })
-	      },
-	      // Capture SDK/CLI stderr output
-	      stderr: (data) => {
-	        try {
-	          const text = (data ?? '').toString().trim();
-	          if (text) {
-	            sdkStderrLines.push(text);
-	            if (sdkStderrLines.length > 50) sdkStderrLines.shift();
-	            console.error(`[SDK-STDERR] ${text}`);
-	          }
-	        } catch (_) {}
-	      }
-	    };
-	    console.log('[PERM_DEBUG] options.canUseTool:', options.canUseTool ? 'SET' : 'NOT SET');
-	    console.log('[PERM_DEBUG] options.hooks:', options.hooks ? 'SET (PreToolUse)' : 'NOT SET');
-	    console.log('[STREAMING_DEBUG] options.includePartialMessages:', options.includePartialMessages ? 'SET' : 'NOT SET');
+    const options = {
+      cwd: workingDirectory,
+      permissionMode: effectivePermissionMode,
+      model: sdkModelName,
+      maxTurns: 100,
+      // Enable file checkpointing for rewind feature
+      enableFileCheckpointing: true,
+      // Extended Thinking config (controlled by alwaysThinkingEnabled in settings.json)
+      // Thinking content is output via the [THINKING] tag for frontend display
+      ...(maxThinkingTokens !== undefined && { maxThinkingTokens }),
+      // Streaming config: enable includePartialMessages to receive incremental content
+      // When streamingEnabled is true, the SDK returns partial messages with incremental content
+      ...(streamingEnabled && { includePartialMessages: true }),
+      additionalDirectories: Array.from(
+        new Set(
+          [workingDirectory, process.env.IDEA_PROJECT_PATH, process.env.PROJECT_PATH].filter(Boolean)
+        )
+      ),
+      canUseTool: shouldUseCanUseTool ? canUseTool : undefined,
+      hooks: {
+        PreToolUse: [{
+          hooks: [createPreToolUseHook(effectivePermissionMode, workingDirectory)]
+        }]
+      },
+      // Don't pass pathToClaudeCodeExecutable; SDK will use its built-in cli.js
+      settingSources: ['user', 'project', 'local'],
+      // Use the Claude Code preset system prompt so Claude knows the current working directory.
+      // This is key to fixing path issues: without systemPrompt, Claude doesn't know the cwd.
+      // If openedFiles is present, add the opened files context via the append field.
+      systemPrompt: {
+        type: 'preset',
+        preset: 'claude_code',
+        ...(systemPromptAppend && { append: systemPromptAppend })
+      },
+      // Capture SDK/CLI stderr output
+      stderr: (data) => {
+        try {
+          const text = (data ?? '').toString().trim();
+          if (text) {
+            sdkStderrLines.push(text);
+            if (sdkStderrLines.length > 50) sdkStderrLines.shift();
+            console.error(`[SDK-STDERR] ${text}`);
+          }
+        } catch (_) {
+        }
+      }
+    };
+    console.log('[PERM_DEBUG] options.canUseTool:', options.canUseTool ? 'SET' : 'NOT SET');
+    console.log('[PERM_DEBUG] options.hooks:', options.hooks ? 'SET (PreToolUse)' : 'NOT SET');
+    console.log('[STREAMING_DEBUG] options.includePartialMessages:', options.includePartialMessages ? 'SET' : 'NOT SET');
 
-		// AbortController-based 60s timeout (disabled due to critical issues; keeping normal query logic only)
-		// const abortController = new AbortController();
-		// options.abortController = abortController;
+    // AbortController-based 60s timeout (disabled due to critical issues; keeping normal query logic only)
+    // const abortController = new AbortController();
+    // options.abortController = abortController;
 
     console.log('[DEBUG] Using SDK built-in Claude CLI (cli.js)');
 
@@ -717,17 +857,17 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
       }
     }
 
-	    console.log('[DEBUG] Query started, waiting for messages...');
+    console.log('[DEBUG] Query started, waiting for messages...');
 
-	    // Dynamically load Claude SDK and get the query function
-	    console.log('[DIAG] Loading Claude SDK...');
-	    const sdk = await ensureClaudeSdk();
-	    console.log('[DIAG] SDK loaded, exports:', sdk ? Object.keys(sdk) : 'null');
-	    const query = sdk?.query;
-	    if (typeof query !== 'function') {
-	      throw new Error('Claude SDK query function not available. Please reinstall dependencies.');
-	    }
-	    console.log('[DIAG] query function available, calling...');
+    // Dynamically load Claude SDK and get the query function
+    console.log('[DIAG] Loading Claude SDK...');
+    const sdk = await ensureClaudeSdk();
+    console.log('[DIAG] SDK loaded, exports:', sdk ? Object.keys(sdk) : 'null');
+    const query = sdk?.query;
+    if (typeof query !== 'function') {
+      throw new Error('Claude SDK query function not available. Please reinstall dependencies.');
+    }
+    console.log('[DIAG] query function available, calling...');
 
     // ========== Auto-retry loop for transient API errors ==========
     let retryAttempt = 0;
@@ -748,17 +888,17 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
       }
 
       try {
-	    // Call the query function
+        // Call the query function
         let result;
         try {
-	        result = query({
-	          prompt: message,
-	          options
-	        });
+          result = query({
+            prompt: message,
+            options
+          });
         } catch (queryError) {
           const canRetry = isRetryableError(queryError) &&
-                           retryAttempt < AUTO_RETRY_CONFIG.maxRetries &&
-                           messageCount <= AUTO_RETRY_CONFIG.maxMessagesForRetry;
+            retryAttempt < AUTO_RETRY_CONFIG.maxRetries &&
+            messageCount <= AUTO_RETRY_CONFIG.maxMessagesForRetry;
           if (canRetry) {
             lastRetryError = queryError;
             retryAttempt++;
@@ -773,266 +913,270 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
           }
           throw queryError;
         }
-	    console.log('[DIAG] query() returned, starting message loop...');
+        console.log('[DIAG] query() returned, starting message loop...');
 
-		// 60s timeout via AbortController to cancel query (disabled due to critical issues)
-		// timeoutId = setTimeout(() => {
-		//   console.log('[DEBUG] Query timeout after 60 seconds, aborting...');
-		//   abortController.abort();
-		// }, 60000);
+        // 60s timeout via AbortController to cancel query (disabled due to critical issues)
+        // timeoutId = setTimeout(() => {
+        //   console.log('[DEBUG] Query timeout after 60 seconds, aborting...');
+        //   abortController.abort();
+        // }, 60000);
 
-	    console.log('[DEBUG] Starting message loop...');
+        console.log('[DEBUG] Starting message loop...');
 
-    // Streaming output
-    // Streaming state tracking (streamingEnabled, streamStarted, streamEnded declared at function top)
-    // Track whether stream_event has been received (to avoid duplicate fallback diff output)
-    // Diff fallback: track previous assistant content for computing incremental deltas
+        // Streaming output
+        // Streaming state tracking (streamingEnabled, streamStarted, streamEnded declared at function top)
+        // Track whether stream_event has been received (to avoid duplicate fallback diff output)
+        // Diff fallback: track previous assistant content for computing incremental deltas
 
-    try {
-    for await (const msg of result) {
-      messageCount++;
-      console.log(`[DEBUG] Received message #${messageCount}, type: ${msg.type}`);
+        try {
+          for await (const msg of result) {
+            messageCount++;
+            console.log(`[DEBUG] Received message #${messageCount}, type: ${msg.type}`);
 
-      // Streaming: output stream start marker (only once)
-      if (streamingEnabled && !streamStarted) {
-        process.stdout.write('[STREAM_START]\n');
-        streamStarted = true;
-      }
+            // Streaming: output stream start marker (only once)
+            if (streamingEnabled && !streamStarted) {
+              process.stdout.write('[STREAM_START]\n');
+              streamStarted = true;
+            }
 
-      // Streaming: handle SDKPartialAssistantMessage (type: 'stream_event')
-      // Stream events returned by SDK via includePartialMessages
-      // Relaxed matching: process any stream_event type
-      if (streamingEnabled && msg.type === 'stream_event') {
-        hasStreamEvents = true;
-        const event = msg.event;
+            // Streaming: handle SDKPartialAssistantMessage (type: 'stream_event')
+            // Stream events returned by SDK via includePartialMessages
+            // Relaxed matching: process any stream_event type
+            if (streamingEnabled && msg.type === 'stream_event') {
+              hasStreamEvents = true;
+              const event = msg.event;
 
-        if (event) {
-          // message_start: accumulate input_tokens, cache_*_tokens
-          if (event.type === 'message_start' && event.message?.usage) {
-            accumulatedUsage = mergeUsage(accumulatedUsage, event.message.usage);
+              if (event) {
+                // message_start: reset per-turn accumulator (matches CLI behavior)
+                if (event.type === 'message_start' && event.message?.usage) {
+                  accumulatedUsage = mergeUsage(null, event.message.usage);
+                }
+
+                // message_delta: accumulate output_tokens and emit [USAGE] tag
+                if (event.type === 'message_delta' && event.usage) {
+                  accumulatedUsage = mergeUsage(accumulatedUsage, event.usage);
+                  emitAccumulatedUsage(accumulatedUsage);
+                }
+
+                // content_block_delta: text or JSON incremental update
+                if (event.type === 'content_block_delta' && event.delta) {
+                  if (event.delta.type === 'text_delta' && event.delta.text) {
+                    // Atomic write to prevent interleaved output
+                    process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(event.delta.text)}\n`);
+                    // Accumulate synchronously to prevent duplicate output from fallback diff
+                    lastAssistantContent += event.delta.text;
+                  } else if (event.delta.type === 'thinking_delta' && event.delta.thinking) {
+                    // Atomic write to prevent interleaved output
+                    process.stdout.write(`[THINKING_DELTA] ${JSON.stringify(event.delta.thinking)}\n`);
+                    lastThinkingContent += event.delta.thinking;
+                  }
+                  // input_json_delta is for tool calls; not handled yet
+                }
+
+                // content_block_start: new content block started (can identify thinking blocks)
+                if (event.type === 'content_block_start' && event.content_block) {
+                  if (event.content_block.type === 'thinking') {
+                    console.log('[THINKING_START]');
+                  }
+                }
+              }
+
+              // Critical fix: don't output [MESSAGE] for stream_event to avoid polluting the Java-side parsing pipeline
+              // console.log('[STREAM_DEBUG]', JSON.stringify(msg));
+              continue; // Stream event processed; skip remaining logic
+            }
+
+            // Output raw message (for Java-side parsing)
+            // In streaming mode, assistant messages need special handling:
+            // - If it contains tool_use, output it so the frontend can render tool blocks
+            // - Pure text assistant messages are skipped to avoid overwriting streaming state
+            let shouldOutputMessage = true;
+            if (streamingEnabled && msg.type === 'assistant') {
+              const msgContent = msg.message?.content;
+              const hasToolUse = Array.isArray(msgContent) && msgContent.some(block => block.type === 'tool_use');
+              if (!hasToolUse) {
+                shouldOutputMessage = false;
+              }
+            }
+            if (shouldOutputMessage) {
+              console.log('[MESSAGE]', JSON.stringify(msg));
+            }
+
+            // Output assistant content in real-time (non-streaming or complete messages)
+            if (msg.type === 'assistant') {
+              const content = msg.message?.content;
+
+              if (Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type === 'text') {
+                    const currentText = block.text || '';
+                    // Streaming fallback: if streaming is enabled but SDK didn't send stream_event, compute delta via diff
+                    if (streamingEnabled && !hasStreamEvents && currentText.length > lastAssistantContent.length) {
+                      const delta = currentText.substring(lastAssistantContent.length);
+                      if (delta) {
+                        process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(delta)}\n`);
+                      }
+                      lastAssistantContent = currentText;
+                    } else if (streamingEnabled && hasStreamEvents) {
+                      // Already output incrementally via stream_event; just sync state to avoid duplicates
+                      if (currentText.length > lastAssistantContent.length) {
+                        lastAssistantContent = currentText;
+                      }
+                    } else if (!streamingEnabled) {
+                      // Non-streaming mode: output full content
+                      console.log('[CONTENT]', truncateErrorContent(currentText));
+                    }
+                  } else if (block.type === 'thinking') {
+                    // Output thinking process
+                    const thinkingText = block.thinking || block.text || '';
+                    // Streaming fallback: also use diff for thinking content
+                    if (streamingEnabled && !hasStreamEvents && thinkingText.length > lastThinkingContent.length) {
+                      const delta = thinkingText.substring(lastThinkingContent.length);
+                      if (delta) {
+                        process.stdout.write(`[THINKING_DELTA] ${JSON.stringify(delta)}\n`);
+                      }
+                      lastThinkingContent = thinkingText;
+                    } else if (streamingEnabled && hasStreamEvents) {
+                      if (thinkingText.length > lastThinkingContent.length) {
+                        lastThinkingContent = thinkingText;
+                      }
+                    } else if (!streamingEnabled) {
+                      console.log('[THINKING]', thinkingText);
+                    }
+                  } else if (block.type === 'tool_use') {
+                    console.log('[TOOL_USE]', JSON.stringify({ id: block.id, name: block.name }));
+                  }
+                }
+              } else if (typeof content === 'string') {
+                // Streaming fallback: also use diff for string content
+                if (streamingEnabled && !hasStreamEvents && content.length > lastAssistantContent.length) {
+                  const delta = content.substring(lastAssistantContent.length);
+                  if (delta) {
+                    process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(delta)}\n`);
+                  }
+                  lastAssistantContent = content;
+                } else if (streamingEnabled && hasStreamEvents) {
+                  if (content.length > lastAssistantContent.length) {
+                    lastAssistantContent = content;
+                  }
+                } else if (!streamingEnabled) {
+                  console.log('[CONTENT]', truncateErrorContent(content));
+                }
+              }
+            }
+
+            // Emit usage data for Java-side token tracking
+            emitUsageTag(msg);
+
+            // Output tool call results in real-time (tool_result in user messages)
+            if (msg.type === 'user') {
+              const content = msg.message?.content ?? msg.content;
+              if (Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type === 'tool_result') {
+                    console.log('[TOOL_RESULT]', JSON.stringify(truncateToolResultBlock(block)));
+                  }
+                }
+              }
+            }
+
+            // Capture and save session_id
+            if (msg.type === 'system' && msg.session_id) {
+              currentSessionId = msg.session_id;
+              console.log('[SESSION_ID]', msg.session_id);
+
+              // Store the query result for rewind operations
+              activeQueryResults.set(msg.session_id, result);
+              console.log('[REWIND_DEBUG] Stored query result for session:', msg.session_id);
+            }
+
+            // Check for error result messages (quick detection of API Key errors)
+            if (msg.type === 'result' && msg.is_error) {
+              console.error('[DEBUG] Received error result message:', JSON.stringify(msg));
+              const errorText = msg.result || msg.message || 'API request failed';
+              throw new Error(errorText);
+            }
+          }
+        } catch (loopError) {
+          // Catch errors in the for-await loop (including SDK internal subprocess spawn failures)
+          console.error('[DEBUG] Error in message loop:', loopError.message);
+          console.error('[DEBUG] Error name:', loopError.name);
+          console.error('[DEBUG] Error stack:', loopError.stack);
+          // Check for subprocess-related errors
+          if (loopError.code) {
+            console.error('[DEBUG] Error code:', loopError.code);
+          }
+          if (loopError.errno) {
+            console.error('[DEBUG] Error errno:', loopError.errno);
+          }
+          if (loopError.syscall) {
+            console.error('[DEBUG] Error syscall:', loopError.syscall);
+          }
+          if (loopError.path) {
+            console.error('[DEBUG] Error path:', loopError.path);
+          }
+          if (loopError.spawnargs) {
+            console.error('[DEBUG] Error spawnargs:', JSON.stringify(loopError.spawnargs));
           }
 
-          // message_delta: accumulate output_tokens and emit [USAGE] tag
-          if (event.type === 'message_delta' && event.usage) {
-            accumulatedUsage = mergeUsage(accumulatedUsage, event.usage);
+          // ========== Auto-retry logic for transient API errors ==========
+          // Only retry if:
+          // 1. Error is retryable (transient network/API issue)
+          // 2. Haven't exceeded max retries
+          // 3. Few messages were processed (early failure, not mid-stream)
+          const canRetry = isRetryableError(loopError) &&
+            retryAttempt < AUTO_RETRY_CONFIG.maxRetries &&
+            messageCount <= AUTO_RETRY_CONFIG.maxMessagesForRetry;
+
+          if (canRetry) {
+            lastRetryError = loopError;
+            retryAttempt++;
+            const retryDelayMs = getRetryDelayMs(loopError);
+            if (isNoConversationFoundError(loopError) && resumeSessionId && resumeSessionId !== '') {
+              await waitForClaudeProjectSessionFile(resumeSessionId, workingDirectory, 2500, 100);
+            }
+            console.log(`[RETRY] Will retry (attempt ${retryAttempt}/${AUTO_RETRY_CONFIG.maxRetries}) after ${retryDelayMs}ms delay`);
+            console.log(`[RETRY] Reason: ${loopError.message}, messageCount: ${messageCount}`);
+
+            // Reset streaming state for retry
+            if (streamingEnabled && streamStarted && !streamEnded) {
+              // Don't output STREAM_END here - we'll start fresh on retry
+              streamStarted = false;
+            }
+
+            // Wait before retry
+            await sleep(retryDelayMs);
+            continue; // Go to next retry attempt
+          }
+
+          // Not retryable or max retries exceeded - throw to outer catch
+          throw loopError;
+        }
+
+        // ========== Success - break out of retry loop ==========
+        console.log(`[DEBUG] Message loop completed. Total messages: ${messageCount}`);
+        if (retryAttempt > 0) {
+          console.log(`[RETRY] Success after ${retryAttempt} retry attempt(s)`);
+        }
+
+        // Streaming: output stream end marker
+        if (streamingEnabled && streamStarted) {
+          // Emit final accumulated usage before stream end
+          if (accumulatedUsage) {
             emitAccumulatedUsage(accumulatedUsage);
           }
-
-          // content_block_delta: text or JSON incremental update
-          if (event.type === 'content_block_delta' && event.delta) {
-            if (event.delta.type === 'text_delta' && event.delta.text) {
-              // Atomic write to prevent interleaved output
-              process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(event.delta.text)}\n`);
-              // Accumulate synchronously to prevent duplicate output from fallback diff
-              lastAssistantContent += event.delta.text;
-            } else if (event.delta.type === 'thinking_delta' && event.delta.thinking) {
-              // Atomic write to prevent interleaved output
-              process.stdout.write(`[THINKING_DELTA] ${JSON.stringify(event.delta.thinking)}\n`);
-              lastThinkingContent += event.delta.thinking;
-            }
-            // input_json_delta is for tool calls; not handled yet
-          }
-
-          // content_block_start: new content block started (can identify thinking blocks)
-          if (event.type === 'content_block_start' && event.content_block) {
-            if (event.content_block.type === 'thinking') {
-              console.log('[THINKING_START]');
-            }
-          }
+          process.stdout.write('[STREAM_END]\n');
+          streamEnded = true;
         }
 
-        // Critical fix: don't output [MESSAGE] for stream_event to avoid polluting the Java-side parsing pipeline
-        // console.log('[STREAM_DEBUG]', JSON.stringify(msg));
-        continue; // Stream event processed; skip remaining logic
-      }
+        console.log('[MESSAGE_END]');
+        console.log(JSON.stringify({
+          success: true,
+          sessionId: currentSessionId
+        }));
 
-      // Output raw message (for Java-side parsing)
-      // In streaming mode, assistant messages need special handling:
-      // - If it contains tool_use, output it so the frontend can render tool blocks
-      // - Pure text assistant messages are skipped to avoid overwriting streaming state
-      let shouldOutputMessage = true;
-      if (streamingEnabled && msg.type === 'assistant') {
-        const msgContent = msg.message?.content;
-        const hasToolUse = Array.isArray(msgContent) && msgContent.some(block => block.type === 'tool_use');
-        if (!hasToolUse) {
-          shouldOutputMessage = false;
-        }
-      }
-      if (shouldOutputMessage) {
-        console.log('[MESSAGE]', JSON.stringify(msg));
-      }
-
-      // Output assistant content in real-time (non-streaming or complete messages)
-      if (msg.type === 'assistant') {
-        const content = msg.message?.content;
-
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === 'text') {
-              const currentText = block.text || '';
-              // Streaming fallback: if streaming is enabled but SDK didn't send stream_event, compute delta via diff
-              if (streamingEnabled && !hasStreamEvents && currentText.length > lastAssistantContent.length) {
-                const delta = currentText.substring(lastAssistantContent.length);
-                if (delta) {
-                  process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(delta)}\n`);
-                }
-                lastAssistantContent = currentText;
-              } else if (streamingEnabled && hasStreamEvents) {
-                // Already output incrementally via stream_event; just sync state to avoid duplicates
-                if (currentText.length > lastAssistantContent.length) {
-                  lastAssistantContent = currentText;
-                }
-              } else if (!streamingEnabled) {
-                // Non-streaming mode: output full content
-                console.log('[CONTENT]', truncateErrorContent(currentText));
-              }
-            } else if (block.type === 'thinking') {
-              // Output thinking process
-              const thinkingText = block.thinking || block.text || '';
-              // Streaming fallback: also use diff for thinking content
-              if (streamingEnabled && !hasStreamEvents && thinkingText.length > lastThinkingContent.length) {
-                const delta = thinkingText.substring(lastThinkingContent.length);
-                if (delta) {
-                  process.stdout.write(`[THINKING_DELTA] ${JSON.stringify(delta)}\n`);
-                }
-                lastThinkingContent = thinkingText;
-              } else if (streamingEnabled && hasStreamEvents) {
-                if (thinkingText.length > lastThinkingContent.length) {
-                  lastThinkingContent = thinkingText;
-                }
-              } else if (!streamingEnabled) {
-                console.log('[THINKING]', thinkingText);
-              }
-            } else if (block.type === 'tool_use') {
-              console.log('[TOOL_USE]', JSON.stringify({ id: block.id, name: block.name }));
-            }
-          }
-        } else if (typeof content === 'string') {
-          // Streaming fallback: also use diff for string content
-          if (streamingEnabled && !hasStreamEvents && content.length > lastAssistantContent.length) {
-            const delta = content.substring(lastAssistantContent.length);
-            if (delta) {
-              process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(delta)}\n`);
-            }
-            lastAssistantContent = content;
-          } else if (streamingEnabled && hasStreamEvents) {
-            if (content.length > lastAssistantContent.length) {
-              lastAssistantContent = content;
-            }
-          } else if (!streamingEnabled) {
-            console.log('[CONTENT]', truncateErrorContent(content));
-          }
-        }
-      }
-
-      // Emit usage data for Java-side token tracking
-      emitUsageTag(msg);
-
-      // Output tool call results in real-time (tool_result in user messages)
-      if (msg.type === 'user') {
-        const content = msg.message?.content ?? msg.content;
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === 'tool_result') {
-              console.log('[TOOL_RESULT]', JSON.stringify(truncateToolResultBlock(block)));
-            }
-          }
-        }
-      }
-
-      // Capture and save session_id
-      if (msg.type === 'system' && msg.session_id) {
-        currentSessionId = msg.session_id;
-        console.log('[SESSION_ID]', msg.session_id);
-
-        // Store the query result for rewind operations
-        activeQueryResults.set(msg.session_id, result);
-        console.log('[REWIND_DEBUG] Stored query result for session:', msg.session_id);
-      }
-
-      // Check for error result messages (quick detection of API Key errors)
-      if (msg.type === 'result' && msg.is_error) {
-        console.error('[DEBUG] Received error result message:', JSON.stringify(msg));
-        const errorText = msg.result || msg.message || 'API request failed';
-        throw new Error(errorText);
-      }
-    }
-    } catch (loopError) {
-      // Catch errors in the for-await loop (including SDK internal subprocess spawn failures)
-      console.error('[DEBUG] Error in message loop:', loopError.message);
-      console.error('[DEBUG] Error name:', loopError.name);
-      console.error('[DEBUG] Error stack:', loopError.stack);
-      // Check for subprocess-related errors
-      if (loopError.code) {
-        console.error('[DEBUG] Error code:', loopError.code);
-      }
-      if (loopError.errno) {
-        console.error('[DEBUG] Error errno:', loopError.errno);
-      }
-      if (loopError.syscall) {
-        console.error('[DEBUG] Error syscall:', loopError.syscall);
-      }
-      if (loopError.path) {
-        console.error('[DEBUG] Error path:', loopError.path);
-      }
-      if (loopError.spawnargs) {
-        console.error('[DEBUG] Error spawnargs:', JSON.stringify(loopError.spawnargs));
-      }
-
-      // ========== Auto-retry logic for transient API errors ==========
-      // Only retry if:
-      // 1. Error is retryable (transient network/API issue)
-      // 2. Haven't exceeded max retries
-      // 3. Few messages were processed (early failure, not mid-stream)
-      const canRetry = isRetryableError(loopError) &&
-                       retryAttempt < AUTO_RETRY_CONFIG.maxRetries &&
-                       messageCount <= AUTO_RETRY_CONFIG.maxMessagesForRetry;
-
-      if (canRetry) {
-        lastRetryError = loopError;
-        retryAttempt++;
-        const retryDelayMs = getRetryDelayMs(loopError);
-        if (isNoConversationFoundError(loopError) && resumeSessionId && resumeSessionId !== '') {
-          await waitForClaudeProjectSessionFile(resumeSessionId, workingDirectory, 2500, 100);
-        }
-        console.log(`[RETRY] Will retry (attempt ${retryAttempt}/${AUTO_RETRY_CONFIG.maxRetries}) after ${retryDelayMs}ms delay`);
-        console.log(`[RETRY] Reason: ${loopError.message}, messageCount: ${messageCount}`);
-
-        // Reset streaming state for retry
-        if (streamingEnabled && streamStarted && !streamEnded) {
-          // Don't output STREAM_END here - we'll start fresh on retry
-          streamStarted = false;
-        }
-
-        // Wait before retry
-        await sleep(retryDelayMs);
-        continue; // Go to next retry attempt
-      }
-
-      // Not retryable or max retries exceeded - throw to outer catch
-      throw loopError;
-    }
-
-    // ========== Success - break out of retry loop ==========
-    console.log(`[DEBUG] Message loop completed. Total messages: ${messageCount}`);
-    if (retryAttempt > 0) {
-      console.log(`[RETRY] Success after ${retryAttempt} retry attempt(s)`);
-    }
-
-    // Streaming: output stream end marker
-    if (streamingEnabled && streamStarted) {
-      console.log('[STREAM_END]');
-      streamEnded = true;
-    }
-
-	    console.log('[MESSAGE_END]');
-	    console.log(JSON.stringify({
-	      success: true,
-	      sessionId: currentSessionId
-	    }));
-
-    // Success - exit retry loop
-    break;
+        // Success - exit retry loop
+        break;
 
       } catch (retryError) {
         // Catch errors from within the retry attempt (outer try of retryLoop)
@@ -1041,13 +1185,14 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
       }
     } // end retryLoop
 
-	  } catch (error) {
-	    // Streaming: also end stream on error to prevent the frontend from getting stuck in streaming state
-	    if (streamingEnabled && streamStarted && !streamEnded) {
-	      console.log('[STREAM_END]');
-	      streamEnded = true;
-	    }
-	    const payload = buildConfigErrorPayload(error);
+  } catch (error) {
+    // Streaming: also end stream on error to prevent the frontend from getting stuck in streaming state
+    if (streamingEnabled && streamStarted && !streamEnded) {
+      emitAccumulatedUsage(accumulatedUsage);
+      process.stdout.write('[STREAM_END]\n');
+      streamEnded = true;
+    }
+    const payload = buildConfigErrorPayload(error);
     if (sdkStderrLines.length > 0) {
       const sdkErrorText = sdkStderrLines.slice(-10).join('\n');
       // Prepend SDK-STDERR to the error message
@@ -1062,7 +1207,6 @@ ${payload.error}`;
     // Truncate final payload.error to prevent webview freezing
     payload.error = truncateString(payload.error);
     console.error('[SEND_ERROR]', JSON.stringify(payload));
-    console.log(JSON.stringify(payload));
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
   }
@@ -1078,7 +1222,10 @@ export async function sendMessageWithAnthropicSDK(message, resumeSessionId, cwd,
     const Anthropic = anthropicModule.default || anthropicModule.Anthropic || anthropicModule;
 
     const workingDirectory = selectWorkingDirectory(cwd);
-    try { process.chdir(workingDirectory); } catch {}
+    try {
+      process.chdir(workingDirectory);
+    } catch {
+    }
 
     const sessionId = (resumeSessionId && resumeSessionId !== '') ? resumeSessionId : randomUUID();
     const rawModelId = model || 'claude-sonnet-4-5';
@@ -1106,11 +1253,11 @@ export async function sendMessageWithAnthropicSDK(message, resumeSessionId, cwd,
       delete process.env.ANTHROPIC_API_KEY;
       process.env.ANTHROPIC_AUTH_TOKEN = apiKey;
     } else if (authType === 'aws_bedrock') {
-        console.log('[DEBUG] Using AWS_BEDROCK authentication (AWS_BEDROCK)');
-        // Dynamically load Bedrock SDK
-        const bedrockModule = await ensureBedrockSdk();
-        const AnthropicBedrock = bedrockModule.AnthropicBedrock || bedrockModule.default || bedrockModule;
-        client = new AnthropicBedrock();
+      console.log('[DEBUG] Using AWS_BEDROCK authentication (AWS_BEDROCK)');
+      // Dynamically load Bedrock SDK
+      const bedrockModule = await ensureBedrockSdk();
+      const AnthropicBedrock = bedrockModule.AnthropicBedrock || bedrockModule.default || bedrockModule;
+      client = new AnthropicBedrock();
     } else {
       console.log('[DEBUG] Using API Key authentication (ANTHROPIC_API_KEY)');
       // Use apiKey parameter (x-api-key authentication)
@@ -1189,7 +1336,12 @@ Possible causes:
           role: 'assistant',
           stop_reason: 'error',
           type: 'message',
-          usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0
+          },
           content: errorContent
         },
         session_id: sessionId,
@@ -1279,7 +1431,6 @@ Possible causes:
       console.error('[ERROR_DETAILS] Status:', error.response.status);
       console.error('[ERROR_DETAILS] Data:', JSON.stringify(error.response.data));
     }
-    console.log(JSON.stringify({ success: false, error: error.message }));
   }
 }
 
@@ -1293,6 +1444,7 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
   let streamingEnabled = false;
   let streamStarted = false;
   let streamEnded = false;
+  let accumulatedUsage = null;
   try {
     process.env.CLAUDE_CODE_ENTRYPOINT = process.env.CLAUDE_CODE_ENTRYPOINT || 'sdk-ts';
 
@@ -1362,7 +1514,7 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
 
     // PreToolUse hook for permission control (replaces canUseTool since it's not called in AsyncIterable mode)
     // See docs/multimodal-permission-bug.md
-    const preToolUseHook = createPreToolUseHook(normalizedPermissionMode);
+    const preToolUseHook = createPreToolUseHook(normalizedPermissionMode, workingDirectory);
 
     // Note: Per SDK docs, if no matcher is specified, the hook matches all tools.
     // We use a single global PreToolUse hook and let its internal logic decide which tools to auto-approve.
@@ -1435,7 +1587,8 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
             if (sdkStderrLines.length > 50) sdkStderrLines.shift();
             console.error(`[SDK-STDERR] ${text}`);
           }
-        } catch (_) {}
+        } catch (_) {
+        }
       }
     };
     console.log('[PERM_DEBUG] (withAttachments) options.canUseTool:', options.canUseTool ? 'SET' : 'NOT SET');
@@ -1443,27 +1596,27 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
     console.log('[PERM_DEBUG] (withAttachments) options.permissionMode:', options.permissionMode);
     console.log('[STREAMING_DEBUG] (withAttachments) options.includePartialMessages:', options.includePartialMessages ? 'SET' : 'NOT SET');
 
-	    // Previously this used AbortController + 30s auto-timeout to cancel attachment requests.
-	    // This caused misleading "Claude Code process aborted by user" errors even when config was correct.
-	    // To stay consistent with plain-text sendMessage, auto-timeout is disabled here; interruption is controlled by the IDE side.
-	    // const abortController = new AbortController();
-	    // options.abortController = abortController;
+    // Previously this used AbortController + 30s auto-timeout to cancel attachment requests.
+    // This caused misleading "Claude Code process aborted by user" errors even when config was correct.
+    // To stay consistent with plain-text sendMessage, auto-timeout is disabled here; interruption is controlled by the IDE side.
+    // const abortController = new AbortController();
+    // options.abortController = abortController;
 
-	    if (resumeSessionId && resumeSessionId !== '') {
-	      options.resume = resumeSessionId;
-	      console.log('[RESUMING]', resumeSessionId);
-	      if (!hasClaudeProjectSessionFile(resumeSessionId, workingDirectory)) {
-	        console.log('[RESUME_WAIT] Waiting for session file to appear before resuming...');
-	        await waitForClaudeProjectSessionFile(resumeSessionId, workingDirectory, 2500, 100);
-	      }
-	    }
+    if (resumeSessionId && resumeSessionId !== '') {
+      options.resume = resumeSessionId;
+      console.log('[RESUMING]', resumeSessionId);
+      if (!hasClaudeProjectSessionFile(resumeSessionId, workingDirectory)) {
+        console.log('[RESUME_WAIT] Waiting for session file to appear before resuming...');
+        await waitForClaudeProjectSessionFile(resumeSessionId, workingDirectory, 2500, 100);
+      }
+    }
 
-		    // Dynamically load Claude SDK
-		    const sdk = await ensureClaudeSdk();
-		    const queryFn = sdk?.query;
-            if (typeof queryFn !== 'function') {
-              throw new Error('Claude SDK query function not available. Please reinstall dependencies.');
-            }
+    // Dynamically load Claude SDK
+    const sdk = await ensureClaudeSdk();
+    const queryFn = sdk?.query;
+    if (typeof queryFn !== 'function') {
+      throw new Error('Claude SDK query function not available. Please reinstall dependencies.');
+    }
 
     // ========== Auto-retry loop for transient API errors ==========
     let retryAttempt = 0;
@@ -1492,14 +1645,14 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
 
         let result;
         try {
-		    result = queryFn({
-		      prompt: inputStream,
-		      options
-		    });
+          result = queryFn({
+            prompt: inputStream,
+            options
+          });
         } catch (queryError) {
           const canRetry = isRetryableError(queryError) &&
-                           retryAttempt < AUTO_RETRY_CONFIG.maxRetries &&
-                           messageCount <= AUTO_RETRY_CONFIG.maxMessagesForRetry;
+            retryAttempt < AUTO_RETRY_CONFIG.maxRetries &&
+            messageCount <= AUTO_RETRY_CONFIG.maxMessagesForRetry;
           if (canRetry) {
             lastRetryError = queryError;
             retryAttempt++;
@@ -1518,182 +1671,182 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
           throw queryError;
         }
 
-	    // To re-enable auto-timeout, implement it here via AbortController with a clear "response timeout" message
-	    // timeoutId = setTimeout(() => {
-	    //   console.log('[DEBUG] Query with attachments timeout after 30 seconds, aborting...');
-	    //   abortController.abort();
-	    // }, 30000);
+        // To re-enable auto-timeout, implement it here via AbortController with a clear "response timeout" message
+        // timeoutId = setTimeout(() => {
+        //   console.log('[DEBUG] Query with attachments timeout after 30 seconds, aborting...');
+        //   abortController.abort();
+        // }, 30000);
 
-		    // Streaming state tracking (streamingEnabled, streamStarted, streamEnded declared at function top)
-		    // Diff fallback: track previous assistant content for computing incremental deltas
+        // Streaming state tracking (streamingEnabled, streamStarted, streamEnded declared at function top)
+        // Diff fallback: track previous assistant content for computing incremental deltas
 
-		    try {
-		    for await (const msg of result) {
-		      messageCount++;
-		      // Streaming: output stream start marker (only once)
-		      if (streamingEnabled && !streamStarted) {
-		        process.stdout.write('[STREAM_START]\n');
-		        streamStarted = true;
-		      }
+        try {
+          for await (const msg of result) {
+            messageCount++;
+            // Streaming: output stream start marker (only once)
+            if (streamingEnabled && !streamStarted) {
+              process.stdout.write('[STREAM_START]\n');
+              streamStarted = true;
+            }
 
-		      // Streaming: handle SDKPartialAssistantMessage (type: 'stream_event')
-		      // Relaxed matching: process any stream_event type
-		      if (streamingEnabled && msg.type === 'stream_event') {
-		        hasStreamEvents = true;
-		        const event = msg.event;
+            // Streaming: handle SDKPartialAssistantMessage (type: 'stream_event')
+            // Relaxed matching: process any stream_event type
+            if (streamingEnabled && msg.type === 'stream_event') {
+              hasStreamEvents = true;
+              const event = msg.event;
 
-		        if (event) {
-		          // message_start: accumulate input_tokens, cache_*_tokens
-		          if (event.type === 'message_start' && event.message?.usage) {
-		            accumulatedUsage = mergeUsage(accumulatedUsage, event.message.usage);
-		          }
+              if (event) {
+                // message_start: reset per-turn accumulator (matches CLI behavior)
+                if (event.type === 'message_start' && event.message?.usage) {
+                  accumulatedUsage = mergeUsage(null, event.message.usage);
+                }
 
-		          // message_delta: accumulate output_tokens and emit [USAGE] tag
-		          if (event.type === 'message_delta' && event.usage) {
-		            accumulatedUsage = mergeUsage(accumulatedUsage, event.usage);
-		            emitAccumulatedUsage(accumulatedUsage);
-		          }
+                // message_delta: accumulate output_tokens and emit [USAGE] tag
+                if (event.type === 'message_delta' && event.usage) {
+                  accumulatedUsage = mergeUsage(accumulatedUsage, event.usage);
+                  emitAccumulatedUsage(accumulatedUsage);
+                }
 
-		          // content_block_delta: text or JSON incremental update
-		          if (event.type === 'content_block_delta' && event.delta) {
-		            if (event.delta.type === 'text_delta' && event.delta.text) {
-		              process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(event.delta.text)}\n`);
-		              lastAssistantContent += event.delta.text;
-		            } else if (event.delta.type === 'thinking_delta' && event.delta.thinking) {
-		              process.stdout.write(`[THINKING_DELTA] ${JSON.stringify(event.delta.thinking)}\n`);
-		              lastThinkingContent += event.delta.thinking;
-		            }
-		          }
+                // content_block_delta: text or JSON incremental update
+                if (event.type === 'content_block_delta' && event.delta) {
+                  if (event.delta.type === 'text_delta' && event.delta.text) {
+                    process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(event.delta.text)}\n`);
+                    lastAssistantContent += event.delta.text;
+                  } else if (event.delta.type === 'thinking_delta' && event.delta.thinking) {
+                    process.stdout.write(`[THINKING_DELTA] ${JSON.stringify(event.delta.thinking)}\n`);
+                    lastThinkingContent += event.delta.thinking;
+                  }
+                }
 
-		          // content_block_start: new content block started
-		          if (event.type === 'content_block_start' && event.content_block) {
-		            if (event.content_block.type === 'thinking') {
-		              console.log('[THINKING_START]');
-		            }
-		          }
-		        }
+                // content_block_start: new content block started
+                if (event.type === 'content_block_start' && event.content_block) {
+                  if (event.content_block.type === 'thinking') {
+                    console.log('[THINKING_START]');
+                  }
+                }
+              }
 
-		        // Critical fix: don't output [MESSAGE] for stream_event
-		        // console.log('[STREAM_DEBUG]', JSON.stringify(msg));
-		        continue;
-		      }
+              // Critical fix: don't output [MESSAGE] for stream_event
+              // console.log('[STREAM_DEBUG]', JSON.stringify(msg));
+              continue;
+            }
 
-	    	      // In streaming mode, assistant messages need special handling
-	    	      let shouldOutputMessage2 = true;
-	    	      if (streamingEnabled && msg.type === 'assistant') {
-	    	        const msgContent2 = msg.message?.content;
-	    	        const hasToolUse2 = Array.isArray(msgContent2) && msgContent2.some(block => block.type === 'tool_use');
-	    	        if (!hasToolUse2) {
-	    	          shouldOutputMessage2 = false;
-	    	        }
-	    	      }
-	    	      if (shouldOutputMessage2) {
-	    	        console.log('[MESSAGE]', JSON.stringify(msg));
-	    	      }
+            // In streaming mode, assistant messages need special handling
+            let shouldOutputMessage2 = true;
+            if (streamingEnabled && msg.type === 'assistant') {
+              const msgContent2 = msg.message?.content;
+              const hasToolUse2 = Array.isArray(msgContent2) && msgContent2.some(block => block.type === 'tool_use');
+              if (!hasToolUse2) {
+                shouldOutputMessage2 = false;
+              }
+            }
+            if (shouldOutputMessage2) {
+              console.log('[MESSAGE]', JSON.stringify(msg));
+            }
 
-	    	      // Process complete assistant messages
-	    	      if (msg.type === 'assistant') {
-	    	        const content = msg.message?.content;
+            // Process complete assistant messages
+            if (msg.type === 'assistant') {
+              const content = msg.message?.content;
 
-	    	        if (Array.isArray(content)) {
-	    	          for (const block of content) {
-	    	            if (block.type === 'text') {
-	    	              const currentText = block.text || '';
-	    	              // Streaming fallback: if streaming is enabled but SDK didn't send stream_event, compute delta via diff
-	    	              if (streamingEnabled && !hasStreamEvents && currentText.length > lastAssistantContent.length) {
-	    	                const delta = currentText.substring(lastAssistantContent.length);
-	    	                if (delta) {
-	    	                  process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(delta)}\n`);
-	    	                }
-	    	                lastAssistantContent = currentText;
-	    	              } else if (streamingEnabled && hasStreamEvents) {
-	    	                if (currentText.length > lastAssistantContent.length) {
-	    	                  lastAssistantContent = currentText;
-	    	                }
-	    	              } else if (!streamingEnabled) {
-	    	                console.log('[CONTENT]', truncateErrorContent(currentText));
-	    	              }
-	    	            } else if (block.type === 'thinking') {
-	    	              const thinkingText = block.thinking || block.text || '';
-	    	              // Streaming fallback: also use diff for thinking content
-	    	              if (streamingEnabled && !hasStreamEvents && thinkingText.length > lastThinkingContent.length) {
-	    	                const delta = thinkingText.substring(lastThinkingContent.length);
-	    	                if (delta) {
-	    	                  process.stdout.write(`[THINKING_DELTA] ${JSON.stringify(delta)}\n`);
-	    	                }
-	    	                lastThinkingContent = thinkingText;
-	    	              } else if (streamingEnabled && hasStreamEvents) {
-	    	                if (thinkingText.length > lastThinkingContent.length) {
-	    	                  lastThinkingContent = thinkingText;
-	    	                }
-	    	              } else if (!streamingEnabled) {
-	    	                console.log('[THINKING]', thinkingText);
-	    	              }
-	    	            } else if (block.type === 'tool_use') {
-	    	              console.log('[TOOL_USE]', JSON.stringify({ id: block.id, name: block.name }));
-	    	            } else if (block.type === 'tool_result') {
-	    	              console.log('[DEBUG] Tool result payload (withAttachments):', JSON.stringify(block));
-	    	            }
-	    	          }
-	    	        } else if (typeof content === 'string') {
-	    	          // Streaming fallback: also use diff for string content
-	    	          if (streamingEnabled && !hasStreamEvents && content.length > lastAssistantContent.length) {
-	    	            const delta = content.substring(lastAssistantContent.length);
-	    	            if (delta) {
-	    	              process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(delta)}\n`);
-	    	            }
-	    	            lastAssistantContent = content;
-	    	          } else if (streamingEnabled && hasStreamEvents) {
-	    	            if (content.length > lastAssistantContent.length) {
-	    	              lastAssistantContent = content;
-	    	            }
-	    	          } else if (!streamingEnabled) {
-	    	            console.log('[CONTENT]', truncateErrorContent(content));
-	    	          }
-	    	        }
-	    	      }
+              if (Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type === 'text') {
+                    const currentText = block.text || '';
+                    // Streaming fallback: if streaming is enabled but SDK didn't send stream_event, compute delta via diff
+                    if (streamingEnabled && !hasStreamEvents && currentText.length > lastAssistantContent.length) {
+                      const delta = currentText.substring(lastAssistantContent.length);
+                      if (delta) {
+                        process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(delta)}\n`);
+                      }
+                      lastAssistantContent = currentText;
+                    } else if (streamingEnabled && hasStreamEvents) {
+                      if (currentText.length > lastAssistantContent.length) {
+                        lastAssistantContent = currentText;
+                      }
+                    } else if (!streamingEnabled) {
+                      console.log('[CONTENT]', truncateErrorContent(currentText));
+                    }
+                  } else if (block.type === 'thinking') {
+                    const thinkingText = block.thinking || block.text || '';
+                    // Streaming fallback: also use diff for thinking content
+                    if (streamingEnabled && !hasStreamEvents && thinkingText.length > lastThinkingContent.length) {
+                      const delta = thinkingText.substring(lastThinkingContent.length);
+                      if (delta) {
+                        process.stdout.write(`[THINKING_DELTA] ${JSON.stringify(delta)}\n`);
+                      }
+                      lastThinkingContent = thinkingText;
+                    } else if (streamingEnabled && hasStreamEvents) {
+                      if (thinkingText.length > lastThinkingContent.length) {
+                        lastThinkingContent = thinkingText;
+                      }
+                    } else if (!streamingEnabled) {
+                      console.log('[THINKING]', thinkingText);
+                    }
+                  } else if (block.type === 'tool_use') {
+                    console.log('[TOOL_USE]', JSON.stringify({ id: block.id, name: block.name }));
+                  } else if (block.type === 'tool_result') {
+                    console.log('[DEBUG] Tool result payload (withAttachments):', JSON.stringify(block));
+                  }
+                }
+              } else if (typeof content === 'string') {
+                // Streaming fallback: also use diff for string content
+                if (streamingEnabled && !hasStreamEvents && content.length > lastAssistantContent.length) {
+                  const delta = content.substring(lastAssistantContent.length);
+                  if (delta) {
+                    process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(delta)}\n`);
+                  }
+                  lastAssistantContent = content;
+                } else if (streamingEnabled && hasStreamEvents) {
+                  if (content.length > lastAssistantContent.length) {
+                    lastAssistantContent = content;
+                  }
+                } else if (!streamingEnabled) {
+                  console.log('[CONTENT]', truncateErrorContent(content));
+                }
+              }
+            }
 
-	    	      // Emit usage data for Java-side token tracking
-	    	      emitUsageTag(msg);
+            // Emit usage data for Java-side token tracking
+            emitUsageTag(msg);
 
-	    	      // Output tool call results in real-time (tool_result in user messages)
-	    	      if (msg.type === 'user') {
-	    	        const content = msg.message?.content ?? msg.content;
-	    	        if (Array.isArray(content)) {
-	    	          for (const block of content) {
-	    	            if (block.type === 'tool_result') {
-	    	              console.log('[TOOL_RESULT]', JSON.stringify(truncateToolResultBlock(block)));
-	    	            }
-	    	          }
-	    	        }
-	    	      }
+            // Output tool call results in real-time (tool_result in user messages)
+            if (msg.type === 'user') {
+              const content = msg.message?.content ?? msg.content;
+              if (Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type === 'tool_result') {
+                    console.log('[TOOL_RESULT]', JSON.stringify(truncateToolResultBlock(block)));
+                  }
+                }
+              }
+            }
 
-	    	      if (msg.type === 'system' && msg.session_id) {
-	    	        currentSessionId = msg.session_id;
-	    	        console.log('[SESSION_ID]', msg.session_id);
+            if (msg.type === 'system' && msg.session_id) {
+              currentSessionId = msg.session_id;
+              console.log('[SESSION_ID]', msg.session_id);
 
-	    	        // Store the query result for rewind operations
-	    	        activeQueryResults.set(msg.session_id, result);
-	    	        console.log('[REWIND_DEBUG] (withAttachments) Stored query result for session:', msg.session_id);
-	    	      }
+              // Store the query result for rewind operations
+              activeQueryResults.set(msg.session_id, result);
+              console.log('[REWIND_DEBUG] (withAttachments) Stored query result for session:', msg.session_id);
+            }
 
-	    	      // Check for error result messages (quick detection of API Key errors)
-	    	      if (msg.type === 'result' && msg.is_error) {
-	    	        console.error('[DEBUG] (withAttachments) Received error result message:', JSON.stringify(msg));
-	    	        const errorText = msg.result || msg.message || 'API request failed';
-	    	        throw new Error(errorText);
-	    	      }
-	    	    }
-	    	    } catch (loopError) {
-	    	      // Catch errors in the for-await loop
-	    	      console.error('[DEBUG] Error in message loop (withAttachments):', loopError.message);
-	    	      console.error('[DEBUG] Error name:', loopError.name);
-	    	      console.error('[DEBUG] Error stack:', loopError.stack);
-	    	      if (loopError.code) console.error('[DEBUG] Error code:', loopError.code);
-	    	      if (loopError.errno) console.error('[DEBUG] Error errno:', loopError.errno);
-	    	      if (loopError.syscall) console.error('[DEBUG] Error syscall:', loopError.syscall);
-	    	      if (loopError.path) console.error('[DEBUG] Error path:', loopError.path);
-	    	      if (loopError.spawnargs) console.error('[DEBUG] Error spawnargs:', JSON.stringify(loopError.spawnargs));
+            // Check for error result messages (quick detection of API Key errors)
+            if (msg.type === 'result' && msg.is_error) {
+              console.error('[DEBUG] (withAttachments) Received error result message:', JSON.stringify(msg));
+              const errorText = msg.result || msg.message || 'API request failed';
+              throw new Error(errorText);
+            }
+          }
+        } catch (loopError) {
+          // Catch errors in the for-await loop
+          console.error('[DEBUG] Error in message loop (withAttachments):', loopError.message);
+          console.error('[DEBUG] Error name:', loopError.name);
+          console.error('[DEBUG] Error stack:', loopError.stack);
+          if (loopError.code) console.error('[DEBUG] Error code:', loopError.code);
+          if (loopError.errno) console.error('[DEBUG] Error errno:', loopError.errno);
+          if (loopError.syscall) console.error('[DEBUG] Error syscall:', loopError.syscall);
+          if (loopError.path) console.error('[DEBUG] Error path:', loopError.path);
+          if (loopError.spawnargs) console.error('[DEBUG] Error spawnargs:', JSON.stringify(loopError.spawnargs));
 
           // ========== Auto-retry logic for transient API errors ==========
           // Only retry if:
@@ -1701,8 +1854,8 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
           // 2. Haven't exceeded max retries
           // 3. Few messages were processed (early failure, not mid-stream)
           const canRetry = isRetryableError(loopError) &&
-                           retryAttempt < AUTO_RETRY_CONFIG.maxRetries &&
-                           messageCount <= AUTO_RETRY_CONFIG.maxMessagesForRetry;
+            retryAttempt < AUTO_RETRY_CONFIG.maxRetries &&
+            messageCount <= AUTO_RETRY_CONFIG.maxMessagesForRetry;
 
           if (canRetry) {
             lastRetryError = loopError;
@@ -1725,28 +1878,32 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
           }
 
           // Not retryable or max retries exceeded - throw to outer catch
-	    	      throw loopError;
-	    	    }
+          throw loopError;
+        }
 
-    // ========== Success - break out of retry loop ==========
-    if (retryAttempt > 0) {
-      console.log(`[RETRY] (withAttachments) Success after ${retryAttempt} retry attempt(s)`);
-    }
+        // ========== Success - break out of retry loop ==========
+        if (retryAttempt > 0) {
+          console.log(`[RETRY] (withAttachments) Success after ${retryAttempt} retry attempt(s)`);
+        }
 
-	    // Streaming: output stream end marker
-	    if (streamingEnabled && streamStarted) {
-	      console.log('[STREAM_END]');
-	      streamEnded = true;
-	    }
+        // Streaming: output stream end marker
+        if (streamingEnabled && streamStarted) {
+          // Emit final accumulated usage before stream end
+          if (accumulatedUsage) {
+            emitAccumulatedUsage(accumulatedUsage);
+          }
+          process.stdout.write('[STREAM_END]\n');
+          streamEnded = true;
+        }
 
-	    console.log('[MESSAGE_END]');
-	    console.log(JSON.stringify({
-	      success: true,
-	      sessionId: currentSessionId
-	    }));
+        console.log('[MESSAGE_END]');
+        console.log(JSON.stringify({
+          success: true,
+          sessionId: currentSessionId
+        }));
 
-    // Success - exit retry loop
-    break;
+        // Success - exit retry loop
+        break;
 
       } catch (retryError) {
         // Catch errors from within the retry attempt (outer try of retryLoop)
@@ -1755,13 +1912,14 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
       }
     } // end retryLoop
 
-	  } catch (error) {
-	    // Streaming: also end stream on error to prevent the frontend from getting stuck in streaming state
-	    if (streamingEnabled && streamStarted && !streamEnded) {
-	      console.log('[STREAM_END]');
-	      streamEnded = true;
-	    }
-	    const payload = buildConfigErrorPayload(error);
+  } catch (error) {
+    // Streaming: also end stream on error to prevent the frontend from getting stuck in streaming state
+    if (streamingEnabled && streamStarted && !streamEnded) {
+      emitAccumulatedUsage(accumulatedUsage);
+      process.stdout.write('[STREAM_END]\n');
+      streamEnded = true;
+    }
+    const payload = buildConfigErrorPayload(error);
     if (sdkStderrLines.length > 0) {
       const sdkErrorText = sdkStderrLines.slice(-10).join('\n');
       // Prepend SDK-STDERR to the error message
@@ -1776,11 +1934,10 @@ ${payload.error}`;
     // Truncate final payload.error to prevent webview freezing
     payload.error = truncateString(payload.error);
     console.error('[SEND_ERROR]', JSON.stringify(payload));
-    console.log(JSON.stringify(payload));
-	  } finally {
-	    if (timeoutId) clearTimeout(timeoutId);
-	  }
-	}
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
 
 // NOTE: getSlashCommands() was removed — slash commands are now resolved
 // locally by Java SlashCommandRegistry (no SDK/bridge call needed).

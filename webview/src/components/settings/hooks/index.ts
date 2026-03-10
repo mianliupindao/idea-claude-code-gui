@@ -33,3 +33,5 @@ export type {
 
 export { useSettingsWindowCallbacks } from './useSettingsWindowCallbacks';
 export type { SettingsWindowCallbacksDeps } from './useSettingsWindowCallbacks';
+
+export { useDragSort } from './useDragSort';

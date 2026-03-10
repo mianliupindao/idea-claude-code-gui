@@ -309,6 +309,7 @@
       "emptyProvider": "कोई प्रदाता कॉन्फ़िगर नहीं",
       "notConfigured": "कॉन्फ़िगर नहीं किया गया",
       "apiKey": "API Key",
+      "apiKeyHelper": "API Key हेल्पर",
       "baseUrl": "Base URL",
       "provider": "प्रदाता",
       "source": "स्रोत",
@@ -348,6 +349,49 @@
       "localProviderName": "Local settings.json",
       "localProviderDescription": "Use configuration directly from ~/.claude/settings.json",
       "localProviderHelp": "When using local provider mode:\n• The plugin will not modify your ~/.claude/settings.json file\n• You need to manually manage your configurations\n• Make sure the file exists and contains valid JSON\n• Suitable for advanced users who prefer manual control",
+      "subscriptionTutorial": {
+        "entry": "सदस्यता खाता गाइड",
+        "dialogTitle": "सदस्यता खाता कैसे उपयोग करें",
+        "tabAriaLabel": "सदस्यता खाता गाइड टैब",
+        "tabs": {
+          "claude": "Claude सदस्यता",
+          "codex": "Codex सदस्यता"
+        },
+        "code": {
+          "copy": "कोड कॉपी करें",
+          "copied": "कॉपी किया"
+        },
+        "providers": {
+          "claude": {
+            "title": "Claude Code सदस्यता खाता कैसे उपयोग करें",
+            "item1": "टर्मिनल में Claude Code CLI के माध्यम से सदस्यता खाते में लॉगिन करें, फिर टर्मिनल में सामान्य रूप से चैट कर सकते हैं",
+            "item2": "सुनिश्चित करें कि ~/.claude/settings.json फ़ाइल और .env फ़ाइल खाली हैं",
+            "item3": "IDEA को रीस्टार्ट करें, और आप सामान्य रूप से चैट कर सकते हैं",
+            "emptyConfigCodeLabel": "~/.claude/settings.json",
+            "emptyConfigCode": "{\n  \"env\": {\n  }\n}",
+            "noteTitle": "विशेष मामले की टिप्पणी:",
+            "note1": "यदि आपने उपरोक्त चरण किए हैं लेकिन प्लगइन अभी भी प्रतिसाद नहीं दे रहा, तो ~/.claude/settings.json .env को इस पर सेट करें:",
+            "proxyConfigCodeLabel": "~/.claude/settings.json",
+            "proxyConfigCode": "{\n  \"env\": {\n    \"HTTP_PROXY\": \"http://127.0.0.1:7897\",\n    \"HTTPS_PROXY\": \"http://127.0.0.1:7897\"\n  }\n}",
+            "issuePrefix": "यदि यह अभी भी काम नहीं करता, तो GitHub पर समस्या रिपोर्ट करें: ",
+            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+          },
+          "codex": {
+            "title": "Codex सदस्यता खाता सेटअप",
+            "item1": "टर्मिनल Codex CLI में codex login चलाएं और लॉगिन करें, फिर टर्मिनल में चैट कर सकते हैं",
+            "item2": "IDEA रीस्टार्ट करें",
+            "item3": "अब आप सामान्य रूप से चैट कर सकते हैं",
+            "emptyConfigCodeLabel": "",
+            "emptyConfigCode": "",
+            "noteTitle": "",
+            "note1": "",
+            "proxyConfigCodeLabel": "",
+            "proxyConfigCode": "",
+            "issuePrefix": "यदि यह अभी भी काम नहीं करता, तो GitHub पर समस्या रिपोर्ट करें: ",
+            "issueUrl": "https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues"
+          }
+        }
+      },
       "importDialog": {
         "title": "cc-switch कॉन्फ़िगरेशन आयात करें",
         "summary": "कुल {{total}} कॉन्फ़िगरेशन पहचाने गए, जिनमें",
@@ -874,8 +918,7 @@
     "bashGroupBatchExecution": "Batch Execution",
     "bashGroupCompleted": "completed",
     "bashGroupAllCompleted": "All Completed",
-    "bashGroupFailed": "failed",
-    "promptLabel": "प्रॉम्प्ट"
+    "bashGroupFailed": "failed"
   },
   "todo": {
     "inProgress": "{{completed}}/{{total}} कार्य प्रगति में",
@@ -1076,9 +1119,9 @@
         "label": "gpt-5.3-codex",
         "description": "नवीनतम फ्रंटियर एजेंटिक कोडिंग मॉडल, उन्नत क्षमताओं के साथ।"
       },
-      "gpt53": {
-        "label": "gpt-5.3",
-        "description": "नवीनतम फ्रंटियर मॉडल, महत्वपूर्ण सुधारों के साथ।"
+      "gpt54": {
+        "label": "gpt-5.4",
+        "description": "उन्नत क्षमताओं के साथ नवीनतम फ्रंटियर मॉडल।"
       },
       "gpt52codex": {
         "label": "gpt-5.2-codex",
@@ -1091,10 +1134,6 @@
       "gpt51codexMini": {
         "label": "gpt-5.1-codex-mini",
         "description": "Codex के लिए अनुकूलित। सस्ता और तेज़, लेकिन कम सक्षम।"
-      },
-      "gpt52": {
-        "label": "gpt-5.2",
-        "description": "ज्ञान में सुधार के साथ नवीनतम फ्रंटियर मॉडल।"
       }
     }
   },
@@ -1133,8 +1172,8 @@
     },
     "acceptEdits": {
       "label": "Auto Edit",
-      "tooltip": "Codex approval_policy=auto-edit – automatically applies file patches, still asks before shell commands.",
-      "description": "Auto-create and edit files via apply_patch while keeping command approvals."
+      "tooltip": "Codex approval_policy=on-request – asks for approval when needed",
+      "description": "Balanced option. Allows normal editing flow while still requiring approvals when needed."
     },
     "bypassPermissions": {
       "label": "Full Auto",

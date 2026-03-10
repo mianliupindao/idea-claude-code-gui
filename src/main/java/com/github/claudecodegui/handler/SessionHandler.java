@@ -10,9 +10,14 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.vfs.VirtualFile;
 
 import java.io.File;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -376,40 +381,120 @@ public class SessionHandler extends BaseMessageHandler {
     private String determineWorkingDirectory() {
         String projectPath = context.getProject().getBasePath();
 
-        // If the project path is invalid, fall back to the user home directory
+        // Prefer the user-configured working directory first
+        // (relative paths are resolved only when projectPath is valid).
+        if (projectPath != null && new File(projectPath).exists()) {
+            try {
+                com.github.claudecodegui.CodemossSettingsService settingsService =
+                        new com.github.claudecodegui.CodemossSettingsService();
+                String customWorkingDir = settingsService.getCustomWorkingDirectory(projectPath);
+
+                if (customWorkingDir != null && !customWorkingDir.isEmpty()) {
+                    // Resolve relative paths against the project root.
+                    File workingDirFile = new File(customWorkingDir);
+                    if (!workingDirFile.isAbsolute()) {
+                        workingDirFile = new File(projectPath, customWorkingDir);
+                    }
+
+                    // Validate that the directory exists.
+                    if (workingDirFile.exists() && workingDirFile.isDirectory()) {
+                        String resolvedPath = workingDirFile.getAbsolutePath();
+                        LOG.info("[SessionHandler] Using custom working directory: " + resolvedPath);
+                        return resolvedPath;
+                    } else {
+                        LOG.warn("[SessionHandler] Custom working directory does not exist: " + workingDirFile.getAbsolutePath() + ", falling back");
+                    }
+                }
+            } catch (Exception e) {
+                LOG.warn("[SessionHandler] Failed to read custom working directory: " + e.getMessage());
+            }
+        }
+
+        // When the active file is outside projectPath, prefer its parent directory.
+        // Typical case: single-file temporary project (projectPath in /tmp)
+        // while the actual file is under the user's home path.
+        String activeFileDir = resolveWorkingDirectoryFromActiveFile(projectPath);
+        if (activeFileDir != null && !activeFileDir.isEmpty()) {
+            return activeFileDir;
+        }
+
+        // Fall back to the user's home directory when projectPath is invalid.
         if (projectPath == null || !new File(projectPath).exists()) {
             String userHome = PlatformUtils.getHomeDirectory();
             LOG.warn("[SessionHandler] Using user home directory as fallback: " + userHome);
             return userHome;
         }
 
-        // Try to read custom working directory from configuration
+        // Use project root as the default working directory.
+        return projectPath;
+    }
+
+    /**
+     * Tries to infer a working directory from the currently active file.
+     * Returns the parent directory only when the file is outside project root;
+     * otherwise returns null.
+     */
+    private String resolveWorkingDirectoryFromActiveFile(String projectPath) {
         try {
-            com.github.claudecodegui.CodemossSettingsService settingsService =
-                    new com.github.claudecodegui.CodemossSettingsService();
-            String customWorkingDir = settingsService.getCustomWorkingDirectory(projectPath);
+            VirtualFile[] selectedFiles = ReadAction.compute(() ->
+                    FileEditorManager.getInstance(context.getProject()).getSelectedFiles()
+            );
+            if (selectedFiles == null || selectedFiles.length == 0) {
+                return null;
+            }
 
-            if (customWorkingDir != null && !customWorkingDir.isEmpty()) {
-                // If it's a relative path, resolve it against the project root
-                File workingDirFile = new File(customWorkingDir);
-                if (!workingDirFile.isAbsolute()) {
-                    workingDirFile = new File(projectPath, customWorkingDir);
+            for (VirtualFile selectedFile : selectedFiles) {
+                if (selectedFile == null || !selectedFile.isInLocalFileSystem()) {
+                    continue;
                 }
 
-                // Verify the directory exists
-                if (workingDirFile.exists() && workingDirFile.isDirectory()) {
-                    String resolvedPath = workingDirFile.getAbsolutePath();
-                    LOG.info("[SessionHandler] Using custom working directory: " + resolvedPath);
-                    return resolvedPath;
-                } else {
-                    LOG.warn("[SessionHandler] Custom working directory does not exist: " + workingDirFile.getAbsolutePath() + ", falling back to project root");
+                String selectedPath = selectedFile.getPath();
+                if (selectedPath == null || selectedPath.isEmpty()) {
+                    continue;
                 }
+
+                File localFile = new File(selectedPath);
+                if (!localFile.exists()) {
+                    continue;
+                }
+
+                String filePath = localFile.getAbsolutePath();
+                String candidateDir = localFile.isDirectory()
+                        ? filePath
+                        : localFile.getParent();
+                if (candidateDir == null || candidateDir.isEmpty()) {
+                    continue;
+                }
+
+                if (projectPath != null && !projectPath.isEmpty() && isPathWithin(filePath, projectPath)) {
+                    continue;
+                }
+
+                LOG.info("[SessionHandler] Active file is outside project root, using its parent as working directory: "
+                        + candidateDir + " (activeFile=" + filePath + ", projectPath=" + projectPath + ")");
+                return candidateDir;
             }
         } catch (Exception e) {
-            LOG.warn("[SessionHandler] Failed to read custom working directory: " + e.getMessage());
+            LOG.debug("[SessionHandler] Failed to resolve working directory from active file: " + e.getMessage());
         }
 
-        // Default to the project root path
-        return projectPath;
+        return null;
+    }
+
+    /**
+     * Checks whether childPath is inside basePath (including equality).
+     */
+    private boolean isPathWithin(String childPath, String basePath) {
+        if (childPath == null || basePath == null) {
+            return false;
+        }
+
+        try {
+            Path child = Paths.get(childPath).toAbsolutePath().normalize();
+            Path base = Paths.get(basePath).toAbsolutePath().normalize();
+            return child.startsWith(base);
+        } catch (Exception ignored) {
+            return childPath.startsWith(basePath);
+        }
     }
 }

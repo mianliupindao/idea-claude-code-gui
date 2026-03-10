@@ -10,6 +10,10 @@ import com.intellij.openapi.project.Project;
 import java.awt.*;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.DataFlavor;
+import java.awt.image.BufferedImage;
+import javax.imageio.ImageIO;
+import java.io.ByteArrayOutputStream;
+import java.util.Base64;
 
 /**
  * IDEA Action for Ctrl+V in the Claude chat tool window.
@@ -30,7 +34,26 @@ public class ChatPasteAction extends ChatToolWindowAction {
                 text = (String) clipboard.getData(DataFlavor.stringFlavor);
                 if (text == null) text = "";
             }
-            if (text.isEmpty()) return;
+            if (text.isEmpty()) {
+                // No text in clipboard - check for image data
+                if (clipboard.isDataFlavorAvailable(DataFlavor.imageFlavor)) {
+                    BufferedImage image = (BufferedImage) clipboard.getData(DataFlavor.imageFlavor);
+                    if (image != null) {
+                        try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+                            ImageIO.write(image, "png", baos);
+                            String base64 = Base64.getEncoder().encodeToString(baos.toByteArray());
+                            // Use Gson JSON encoding to safely embed base64 data, consistent with text paste below
+                            String jsonBase64 = GSON.toJson(base64);
+                            chatWindow.executeJavaScriptCode(
+                                "(function(){" +
+                                "  window.dispatchEvent(new CustomEvent('java-paste-image',{detail:{base64:" + jsonBase64 + ",mediaType:'image/png'}}));" +
+                                "})()"
+                            );
+                        }
+                    }
+                }
+                return;
+            }
 
             // Use Gson JSON encoding to safely embed clipboard text, preventing JS injection
             String jsonEncoded = GSON.toJson(text);

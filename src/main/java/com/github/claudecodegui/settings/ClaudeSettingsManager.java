@@ -12,6 +12,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -80,11 +81,33 @@ public class ClaudeSettingsManager {
             return createDefaultClaudeSettings();
         }
 
-        try (FileReader reader = new FileReader(settingsFile)) {
+        try (FileReader reader = new FileReader(settingsFile, StandardCharsets.UTF_8)) {
             return JsonParser.parseReader(reader).getAsJsonObject();
         } catch (Exception e) {
             LOG.warn("[ClaudeSettingsManager] Failed to read ~/.claude/settings.json: " + e.getMessage());
             return createDefaultClaudeSettings();
+        }
+    }
+
+    /**
+     * Read managed settings from the platform-specific managed-settings.json.
+     * Returns null if the file does not exist or cannot be parsed.
+     */
+    public JsonObject readManagedSettings() {
+        try {
+            Path managedPath = pathManager.getManagedSettingsPath();
+            File managedFile = managedPath.toFile();
+
+            if (!managedFile.exists()) {
+                return null;
+            }
+
+            try (FileReader reader = new FileReader(managedFile)) {
+                return JsonParser.parseReader(reader).getAsJsonObject();
+            }
+        } catch (Exception e) {
+            LOG.debug("[ClaudeSettingsManager] Failed to read managed-settings.json: " + e.getMessage());
+            return null;
         }
     }
 
@@ -106,7 +129,7 @@ public class ClaudeSettingsManager {
         // Force-set to string value "1"
         env.addProperty("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
 
-        try (FileWriter writer = new FileWriter(settingsPath.toFile())) {
+        try (FileWriter writer = new FileWriter(settingsPath.toFile(), StandardCharsets.UTF_8)) {
             gson.toJson(settings, writer);
             LOG.info("[ClaudeSettingsManager] Synced settings to: " + settingsPath);
         }
@@ -130,7 +153,7 @@ public class ClaudeSettingsManager {
             }
 
             JsonObject claudeJson;
-            try (FileReader reader = new FileReader(claudeJsonFile)) {
+            try (FileReader reader = new FileReader(claudeJsonFile, StandardCharsets.UTF_8)) {
                 claudeJson = JsonParser.parseReader(reader).getAsJsonObject();
             } catch (Exception e) {
                 LOG.error("[ClaudeSettingsManager] Failed to parse ~/.claude.json: " + e.getMessage(), e);
@@ -172,6 +195,18 @@ public class ClaudeSettingsManager {
     }
 
     /**
+     * Detect apiKeyHelper in user settings or managed settings.
+     * @return true if apiKeyHelper is configured, false otherwise
+     */
+    private boolean hasApiKeyHelper(JsonObject claudeSettings) {
+        if (claudeSettings.has("apiKeyHelper") && !claudeSettings.get("apiKeyHelper").isJsonNull()) {
+            return true;
+        }
+        JsonObject managedSettings = readManagedSettings();
+        return managedSettings != null && managedSettings.has("apiKeyHelper") && !managedSettings.get("apiKeyHelper").isJsonNull();
+    }
+
+    /**
      * Get the current configuration used by Claude CLI (~/.claude/settings.json).
      * Used to display the currently applied configuration on the settings page.
      */
@@ -197,12 +232,19 @@ public class ClaudeSettingsManager {
 
             String baseUrl = env.has("ANTHROPIC_BASE_URL") ? env.get("ANTHROPIC_BASE_URL").getAsString() : "";
 
+            // If no API key found, check for apiKeyHelper in user settings or managed settings
+            if (apiKey.isEmpty() && "none".equals(authType) && hasApiKeyHelper(claudeSettings)) {
+                authType = "api_key_helper";
+            }
+
             result.addProperty("apiKey", apiKey);
             result.addProperty("authType", authType);  // Add auth type identifier
             result.addProperty("baseUrl", baseUrl);
         } else {
+            // No env object — still check for apiKeyHelper
+            String authType = hasApiKeyHelper(claudeSettings) ? "api_key_helper" : "none";
             result.addProperty("apiKey", "");
-            result.addProperty("authType", "none");
+            result.addProperty("authType", authType);
             result.addProperty("baseUrl", "");
         }
 
