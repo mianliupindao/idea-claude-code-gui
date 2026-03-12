@@ -27,6 +27,12 @@ import { readStdinData } from './utils/stdin-utils.js';
 import { handleClaudeCommand } from './channels/claude-channel.js';
 import { handleCodexCommand } from './channels/codex-channel.js';
 import { getSdkStatus, isClaudeSdkAvailable, isCodexSdkAvailable } from './utils/sdk-loader.js';
+import { injectNetworkEnvVars } from './config/api-config.js';
+
+// Inject proxy and TLS settings from ~/.claude/settings.json BEFORE any
+// network activity.  Without this, users behind corporate SSL-inspection
+// proxies will get certificate verification errors.
+injectNetworkEnvVars();
 
 // Diagnostic logging: startup info
 console.log('[DIAG-ENTRY] ========== CHANNEL-MANAGER STARTUP ==========');

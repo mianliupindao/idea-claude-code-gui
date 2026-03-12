@@ -18,16 +18,61 @@ function debugLog(...args) {
 }
 
 /**
- * Inject proxy environment variables from settings.json into process.env.
+ * Network-related environment variable names that should be injected from
+ * settings.json into process.env early at startup.
+ *
  * IDEs launched via desktop launcher don't inherit shell proxy configuration,
  * so we need to explicitly read and set them from settings.json.
+ *
+ * For corporate SSL-inspection proxies, prefer NODE_EXTRA_CA_CERTS (path to
+ * a PEM bundle) over NODE_TLS_REJECT_UNAUTHORIZED=0 — the former adds custom
+ * CAs while keeping verification intact; the latter disables ALL verification.
  */
-function injectProxyEnvVars(settings) {
-  const PROXY_VARS = ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy'];
-  for (const varName of PROXY_VARS) {
-    if (settings?.env?.[varName] && !process.env[varName]) {
-      process.env[varName] = settings.env[varName];
-      debugLog(`[DEBUG] Set ${varName} from settings.json`);
+const NETWORK_ENV_VARS = [
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
+  'http_proxy', 'https_proxy', 'no_proxy',
+  'NODE_EXTRA_CA_CERTS',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
+];
+
+/**
+ * Inject network-related environment variables from settings.json into process.env.
+ *
+ * This includes proxy settings AND TLS configuration. It must be called as early
+ * as possible in every Node.js entry point — before any HTTPS connection is made
+ * (including SDK preloading) — so that corporate proxies and custom CA setups work.
+ *
+ * Users behind corporate SSL-inspection proxies should prefer setting:
+ *   { "env": { "NODE_EXTRA_CA_CERTS": "/path/to/ca-bundle.pem" } }
+ *
+ * As a last resort (disables ALL TLS verification — MITM risk):
+ *   { "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" } }
+ *
+ * @param {Object} [settings] - Parsed settings object. If omitted, loads from disk.
+ */
+export function injectNetworkEnvVars(settings) {
+  const resolvedSettings = settings || loadClaudeSettings();
+  for (const varName of NETWORK_ENV_VARS) {
+    const value = resolvedSettings?.env?.[varName];
+    if (value === undefined || value === null || process.env[varName]) {
+      continue;
+    }
+
+    // Validate proxy URLs before injecting
+    if (['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'].includes(varName)) {
+      try {
+        new URL(String(value));
+      } catch {
+        debugLog(`[DEBUG] Skipping ${varName}: invalid URL "${value}"`);
+        continue;
+      }
+    }
+
+    process.env[varName] = String(value);
+    debugLog(`[DEBUG] Set ${varName} from settings.json`);
+
+    if (varName === 'NODE_TLS_REJECT_UNAUTHORIZED' && String(value) === '0') {
+      console.warn('[SECURITY WARNING] TLS certificate verification is disabled via settings.json. All HTTPS connections are vulnerable to MITM attacks. Prefer NODE_EXTRA_CA_CERTS for corporate proxies.');
     }
   }
 }
@@ -179,8 +224,8 @@ export function setupApiKey() {
     debugLog('[DIAG-CONFIG] Settings env keys:', Object.keys(settings.env));
   }
 
-  // Inject proxy env vars early, before any auth logic or network operations
-  injectProxyEnvVars(settings);
+  // Network env vars are already injected at module top-level in each entry
+  // point (channel-manager.js, daemon.js) before any network activity occurs.
 
   let apiKey;
   let baseUrl;

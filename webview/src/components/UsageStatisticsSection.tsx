@@ -1,214 +1,21 @@
-import { useEffect, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ProjectStatistics, DailyUsage } from '../types/usage';
-
-type TabType = 'overview' | 'models' | 'sessions' | 'timeline';
-type ScopeType = 'current' | 'all';
-type DateRangeType = '7d' | '30d' | 'all';
-
-const sendToJava = (message: string, payload: any = {}) => {
-  if (window.sendToJava) {
-    const payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    window.sendToJava(`${message}:${payloadStr}`);
-  }
-};
+import { useUsageStatistics } from './UsageStatistics/useUsageStatistics.js';
+import { UsageOverviewTab } from './UsageStatistics/UsageOverviewTab.js';
+import { UsageModelsTab } from './UsageStatistics/UsageModelsTab.js';
+import { UsageSessionsTab } from './UsageStatistics/UsageSessionsTab.js';
+import { UsageTimelineTab } from './UsageStatistics/UsageTimelineTab.js';
 
 const UsageStatisticsSection = ({ currentProvider }: { currentProvider?: string }) => {
   const { t } = useTranslation();
-  const [statistics, setStatistics] = useState<ProjectStatistics | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabType>('overview');
-  const [projectScope, setProjectScope] = useState<ScopeType>('current');
-  const [dateRange, setDateRange] = useState<DateRangeType>('7d');
-  const [sessionPage, setSessionPage] = useState(1);
-  const [sessionSortBy, setSessionSortBy] = useState<'cost' | 'time'>('cost');
-  const [tooltip, setTooltip] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    content: { date: string; cost: number; sessions: number };
-  }>({
-    visible: false,
-    x: 0,
-    y: 0,
-    content: { date: '', cost: 0, sessions: 0 }
-  });
-  const sessionsPerPage = 20;
-  const isFirstMount = useRef(true);
-
-  useEffect(() => {
-    // Set up global callback
-    window.updateUsageStatistics = (jsonStr: string) => {
-      try {
-        const data: ProjectStatistics = JSON.parse(jsonStr);
-        setStatistics(data);
-        setLoading(false);
-      } catch (error) {
-        console.error('Failed to parse usage statistics:', error);
-        setLoading(false);
-      }
-    };
-
-    // Only check for pending data on first mount
-    if (isFirstMount.current && window.__pendingUsageStatistics) {
-      console.log('[UsageStatisticsSection] Found pending usage statistics, applying...');
-      try {
-        const data: ProjectStatistics = JSON.parse(window.__pendingUsageStatistics);
-        setStatistics(data);
-        setLoading(false);
-      } catch (error) {
-        console.error('Failed to parse pending usage statistics:', error);
-        loadStatistics();
-      }
-      window.__pendingUsageStatistics = undefined;
-    } else {
-      loadStatistics();
-    }
-
-    isFirstMount.current = false;
-  }, [projectScope, dateRange]);
-
-  const loadStatistics = () => {
-    setLoading(true);
-    sendToJava('get_usage_statistics', {
-      scope: projectScope,
-      provider: currentProvider || 'claude',
-      dateRange: dateRange
-    });
-  };
-
-  const handleRefresh = () => {
-    loadStatistics();
-  };
-
-  const handleScopeChange = (scope: ScopeType) => {
-    setProjectScope(scope);
-    setSessionPage(1);
-  };
-
-  // Number formatting
-  const formatNumber = (num: number): string => {
-    if (num >= 1_000_000_000) return `${(num / 1_000_000_000).toFixed(1)}B`;
-    if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
-    if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
-    return num.toString();
-  };
-
-  const formatCost = (cost: number): string => {
-    return `$${cost.toFixed(4)}`;
-  };
-
-  const formatDate = (timestamp: number): string => {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-    if (diffDays === 0) return t('usage.today');
-    if (diffDays === 1) return t('usage.yesterday');
-    if (diffDays < 7) return `${diffDays}${t('usage.daysAgo')}`;
-
-    return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
-  };
-
-  // Short date formatting
-  const formatChineseDate = (dateStr: string): string => {
-    const date = new Date(dateStr);
-    const month = date.getMonth() + 1;
-    const day = date.getDate();
-    return `${month}月${day}日`;
-  };
-
-  // Relative time formatting (used for last updated time)
-  const formatRelativeTime = (timestamp: number): string => {
-    const now = Date.now();
-    const diffMs = now - timestamp;
-    const diffSec = Math.floor(diffMs / 1000);
-    const diffMin = Math.floor(diffSec / 60);
-    const diffHour = Math.floor(diffMin / 60);
-
-    if (diffSec < 60) return t('usage.justNow');
-    if (diffMin < 60) return `${diffMin}${t('usage.minutesAgo')}`;
-    if (diffHour < 24) return `${diffHour}${t('usage.hoursAgo')}`;
-
-    return formatDate(timestamp);
-  };
-
-  // Trend rendering function
-  const renderTrend = (value: number) => {
-    if (value === 0) return <span className="trend neutral">→ 0% {t('usage.comparedToLastWeek')}</span>;
-    const isUp = value > 0;
-    return (
-      <span className={`trend ${isUp ? 'up' : 'down'}`}>
-        {isUp ? '↑' : '↓'} {Math.abs(value).toFixed(1)}% {t('usage.comparedToLastWeek')}
-      </span>
-    );
-  };
-
-  // Date range filter function
-  const filterByDateRange = <T extends { timestamp?: number; date?: string }>(
-    items: T[],
-    range: DateRangeType
-  ): T[] => {
-    if (range === 'all') return items;
-
-    const now = Date.now();
-    const cutoff = range === '7d'
-      ? now - 7 * 24 * 60 * 60 * 1000
-      : now - 30 * 24 * 60 * 60 * 1000;
-
-    return items.filter(item => {
-      const time = item.timestamp || new Date(item.date!).getTime();
-      return time >= cutoff;
-    });
-  };
-
-  // Filter and sort sessions
-  const filteredSessions = filterByDateRange(statistics?.sessions || [], dateRange).slice().sort((a, b) => {
-    if (sessionSortBy === 'cost') {
-      return b.cost - a.cost;
-    } else {
-      return b.timestamp - a.timestamp;
-    }
-  });
-
-  const paginatedSessions = filteredSessions.slice(
-    (sessionPage - 1) * sessionsPerPage,
-    sessionPage * sessionsPerPage
-  );
-
-  const totalPages = Math.ceil(filteredSessions.length / sessionsPerPage);
-
-  // Get token percentage
-  const getTokenPercentage = (value: number): number => {
-    if (!statistics || statistics.totalUsage.totalTokens === 0) return 0;
-    return (value / statistics.totalUsage.totalTokens) * 100;
-  };
-
-  // Filter data within date range
-  const getFilteredDailyUsage = (): DailyUsage[] => {
-    if (!statistics) return [];
-
-    const now = Date.now();
-    let cutoffDate = 0;
-
-    if (dateRange === '7d') {
-      cutoffDate = now - 7 * 24 * 60 * 60 * 1000;
-    } else if (dateRange === '30d') {
-      cutoffDate = now - 30 * 24 * 60 * 60 * 1000;
-    }
-
-    if (dateRange === 'all') {
-      return statistics.dailyUsage;
-    }
-
-    return statistics.dailyUsage.filter(day => {
-      const dayTime = new Date(day.date).getTime();
-      return dayTime >= cutoffDate;
-    });
-  };
-
-  const filteredDailyUsage = getFilteredDailyUsage();
+  const {
+    statistics, loading, activeTab, projectScope, dateRange,
+    sessionPage, sessionSortBy, tooltip, sessionsPerPage,
+    filteredSessions, paginatedSessions, totalPages, filteredDailyUsage,
+    setActiveTab, setDateRange, setSessionPage, setSessionSortBy, setTooltip,
+    handleRefresh, handleScopeChange,
+    formatNumber, formatCost, formatDate, formatChineseDate,
+    formatRelativeTime, renderTrend, getTokenPercentage,
+  } = useUsageStatistics(currentProvider);
 
   if (loading && !statistics) {
     return (
@@ -293,31 +100,19 @@ const UsageStatisticsSection = ({ currentProvider }: { currentProvider?: string 
 
       {/* Tab navigation */}
       <div className="usage-tabs">
-        <button
-          className={`tab-btn ${activeTab === 'overview' ? 'active' : ''}`}
-          onClick={() => setActiveTab('overview')}
-        >
+        <button className={`tab-btn ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => setActiveTab('overview')}>
           <span className="codicon codicon-dashboard" />
           {t('usage.overview')}
         </button>
-        <button
-          className={`tab-btn ${activeTab === 'models' ? 'active' : ''}`}
-          onClick={() => setActiveTab('models')}
-        >
+        <button className={`tab-btn ${activeTab === 'models' ? 'active' : ''}`} onClick={() => setActiveTab('models')}>
           <span className="codicon codicon-symbol-class" />
           {t('usage.models')}
         </button>
-        <button
-          className={`tab-btn ${activeTab === 'sessions' ? 'active' : ''}`}
-          onClick={() => setActiveTab('sessions')}
-        >
+        <button className={`tab-btn ${activeTab === 'sessions' ? 'active' : ''}`} onClick={() => setActiveTab('sessions')}>
           <span className="codicon codicon-list-unordered" />
           {t('usage.sessions')}
         </button>
-        <button
-          className={`tab-btn ${activeTab === 'timeline' ? 'active' : ''}`}
-          onClick={() => setActiveTab('timeline')}
-        >
+        <button className={`tab-btn ${activeTab === 'timeline' ? 'active' : ''}`} onClick={() => setActiveTab('timeline')}>
           <span className="codicon codicon-graph-line" />
           {t('usage.timeline')}
         </button>
@@ -325,340 +120,50 @@ const UsageStatisticsSection = ({ currentProvider }: { currentProvider?: string 
 
       {/* Tab content */}
       <div className="usage-content">
-        {/* Overview Tab */}
         {activeTab === 'overview' && (
-          <div className="overview-tab">
-            {/* Project info - simplified */}
-            <div className="project-info-simple">
-              <span className="codicon codicon-folder" />
-              <span className="project-name">{statistics.projectName}</span>
-            </div>
-
-            {/* Statistics cards - with trend indicators */}
-            <div className="stat-cards">
-              <div className="stat-card cost-card">
-                <div className="stat-icon">
-                  <span className="codicon codicon-credit-card" />
-                </div>
-                <div className="stat-content">
-                  <div className="stat-label">{t('usage.totalCost')}</div>
-                  <div className="stat-value">{formatCost(statistics.estimatedCost)}</div>
-                  {statistics.weeklyComparison && renderTrend(statistics.weeklyComparison.trends.cost)}
-                </div>
-              </div>
-
-              <div className="stat-card sessions-card">
-                <div className="stat-icon">
-                  <span className="codicon codicon-comment-discussion" />
-                </div>
-                <div className="stat-content">
-                  <div className="stat-label">{t('usage.totalSessions')}</div>
-                  <div className="stat-value">{statistics.totalSessions}</div>
-                  {statistics.weeklyComparison && renderTrend(statistics.weeklyComparison.trends.sessions)}
-                </div>
-              </div>
-
-              <div className="stat-card tokens-card">
-                <div className="stat-icon">
-                  <span className="codicon codicon-symbol-numeric" />
-                </div>
-                <div className="stat-content">
-                  <div className="stat-label">{t('usage.totalTokens')}</div>
-                  <div className="stat-value">{formatNumber(statistics.totalUsage.totalTokens)}</div>
-                  {statistics.weeklyComparison && renderTrend(statistics.weeklyComparison.trends.tokens)}
-                </div>
-              </div>
-
-              <div className="stat-card avg-card">
-                <div className="stat-icon">
-                  <span className="codicon codicon-graph" />
-                </div>
-                <div className="stat-content">
-                  <div className="stat-label">{t('usage.avgPerSession')}</div>
-                  <div className="stat-value">
-                    {statistics.totalSessions > 0
-                      ? formatCost(statistics.estimatedCost / statistics.totalSessions)
-                      : '$0.00'}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Token breakdown - individual progress bars */}
-            <div className="token-breakdown-section">
-              <h4>{t('usage.tokenBreakdown')}</h4>
-              <div className="token-breakdown-independent">
-                <div className="token-bar-item">
-                  <div className="token-bar-header">
-                    <span className="token-bar-label">{t('usage.input')}</span>
-                    <span className="token-bar-value">{formatNumber(statistics.totalUsage.inputTokens)}</span>
-                  </div>
-                  <div className="token-bar-track">
-                    <div
-                      className="token-bar-fill input"
-                      style={{ width: `${getTokenPercentage(statistics.totalUsage.inputTokens)}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div className="token-bar-item">
-                  <div className="token-bar-header">
-                    <span className="token-bar-label">{t('usage.output')}</span>
-                    <span className="token-bar-value">{formatNumber(statistics.totalUsage.outputTokens)}</span>
-                  </div>
-                  <div className="token-bar-track">
-                    <div
-                      className="token-bar-fill output"
-                      style={{ width: `${getTokenPercentage(statistics.totalUsage.outputTokens)}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div className="token-bar-item">
-                  <div className="token-bar-header">
-                    <span className="token-bar-label">{t('usage.cacheWrite')}</span>
-                    <span className="token-bar-value">{formatNumber(statistics.totalUsage.cacheWriteTokens)}</span>
-                  </div>
-                  <div className="token-bar-track">
-                    <div
-                      className="token-bar-fill cache-write"
-                      style={{ width: `${getTokenPercentage(statistics.totalUsage.cacheWriteTokens)}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div className="token-bar-item">
-                  <div className="token-bar-header">
-                    <span className="token-bar-label">{t('usage.cacheRead')}</span>
-                    <span className="token-bar-value">{formatNumber(statistics.totalUsage.cacheReadTokens)}</span>
-                  </div>
-                  <div className="token-bar-track">
-                    <div
-                      className="token-bar-fill cache-read"
-                      style={{ width: `${getTokenPercentage(statistics.totalUsage.cacheReadTokens)}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Top models */}
-            {statistics.byModel.length > 0 && (
-              <div className="top-models-section">
-                <h4>{t('usage.topModels')}</h4>
-                <div className="top-models">
-                  {statistics.byModel.slice(0, 3).map((model, index) => (
-                    <div key={model.model} className="model-card">
-                      <div className="model-rank">#{index + 1}</div>
-                      <div className="model-info">
-                        <div className="model-name">{model.model}</div>
-                        <div className="model-stats">
-                          <span>{formatCost(model.totalCost)}</span>
-                          <span className="separator">•</span>
-                          <span>{formatNumber(model.totalTokens)} tokens</span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+          <UsageOverviewTab
+            statistics={statistics}
+            formatCost={formatCost}
+            formatNumber={formatNumber}
+            renderTrend={renderTrend}
+            getTokenPercentage={getTokenPercentage}
+          />
         )}
 
-        {/* Models Tab */}
         {activeTab === 'models' && (
-          <div className="models-tab">
-            <h4>{t('usage.byModel')}</h4>
-            <div className="models-list">
-              {statistics.byModel.map((model) => (
-                <div key={model.model} className="model-item">
-                  <div className="model-header">
-                    <span className="model-name">{model.model}</span>
-                    <span className="model-cost">{formatCost(model.totalCost)}</span>
-                  </div>
-                  <div className="model-details">
-                    <div className="model-detail-item">
-                      <span className="model-detail-label">{t('usage.sessionCount')}:</span>
-                      <span className="model-detail-value">{model.sessionCount}</span>
-                    </div>
-                    <div className="model-detail-item">
-                      <span className="model-detail-label">{t('usage.totalTokens')}:</span>
-                      <span className="model-detail-value">{formatNumber(model.totalTokens)}</span>
-                    </div>
-                    <div className="model-detail-item">
-                      <span className="model-detail-label">{t('usage.input')}:</span>
-                      <span className="model-detail-value">{formatNumber(model.inputTokens)}</span>
-                    </div>
-                    <div className="model-detail-item">
-                      <span className="model-detail-label">{t('usage.output')}:</span>
-                      <span className="model-detail-value">{formatNumber(model.outputTokens)}</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <UsageModelsTab
+            models={statistics.byModel}
+            formatCost={formatCost}
+            formatNumber={formatNumber}
+          />
         )}
 
-        {/* Sessions Tab */}
         {activeTab === 'sessions' && (
-          <div className="sessions-tab">
-            <div className="sessions-header">
-              <h4>{t('usage.sessionList')} ({filteredSessions.length})</h4>
-              <div className="sort-buttons">
-                <button
-                  className={`sort-btn ${sessionSortBy === 'cost' ? 'active' : ''}`}
-                  onClick={() => setSessionSortBy('cost')}
-                >
-                  {t('usage.sortByCost')}
-                </button>
-                <button
-                  className={`sort-btn ${sessionSortBy === 'time' ? 'active' : ''}`}
-                  onClick={() => setSessionSortBy('time')}
-                >
-                  {t('usage.sortByTime')}
-                </button>
-              </div>
-            </div>
-
-            <div className="sessions-list">
-              {paginatedSessions.map((session, index) => (
-                <div key={session.sessionId} className="session-item">
-                  <div className="session-rank">
-                    {(sessionPage - 1) * sessionsPerPage + index + 1}
-                  </div>
-                  <div className="session-info">
-                    {/* Prefer showing summary as the title */}
-                    <div className="session-title">
-                      {session.summary || session.sessionId}
-                    </div>
-                    {session.summary && (
-                      <div className="session-id-small">{session.sessionId}</div>
-                    )}
-                    <div className="session-meta">
-                      <span>{formatDate(session.timestamp)}</span>
-                      <span className="separator">•</span>
-                      <span>{session.model}</span>
-                      <span className="separator">•</span>
-                      <span>{formatNumber(session.usage.totalTokens)} tokens</span>
-                    </div>
-                  </div>
-                  <div className="session-cost">{formatCost(session.cost)}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Pagination */}
-            {totalPages > 1 && (
-              <div className="pagination">
-                <button
-                  onClick={() => setSessionPage(p => Math.max(1, p - 1))}
-                  disabled={sessionPage === 1}
-                  className="page-btn"
-                >
-                  <span className="codicon codicon-chevron-left" />
-                </button>
-                <span className="page-info">
-                  {sessionPage} / {totalPages}
-                </span>
-                <button
-                  onClick={() => setSessionPage(p => Math.min(totalPages, p + 1))}
-                  disabled={sessionPage === totalPages}
-                  className="page-btn"
-                >
-                  <span className="codicon codicon-chevron-right" />
-                </button>
-              </div>
-            )}
-          </div>
+          <UsageSessionsTab
+            filteredSessions={filteredSessions}
+            paginatedSessions={paginatedSessions}
+            sessionPage={sessionPage}
+            totalPages={totalPages}
+            sessionsPerPage={sessionsPerPage}
+            sessionSortBy={sessionSortBy}
+            setSessionPage={setSessionPage}
+            setSessionSortBy={setSessionSortBy}
+            formatDate={formatDate}
+            formatCost={formatCost}
+            formatNumber={formatNumber}
+          />
         )}
 
-        {/* Timeline Tab */}
         {activeTab === 'timeline' && (
-          <div className="timeline-tab">
-            <h4>{t('usage.dailyTrend')}</h4>
-            <div className="timeline-chart">
-              {filteredDailyUsage.length > 0 ? (
-                (() => {
-                  const maxCost = Math.max(...filteredDailyUsage.map(d => d.cost));
-                  const yAxisValues = [0, maxCost * 0.25, maxCost * 0.5, maxCost * 0.75, maxCost];
-
-                  return (
-                    <div className="chart-with-axis">
-                      {/* Y-axis labels */}
-                      <div className="chart-y-axis">
-                        {yAxisValues.reverse().map((val, i) => (
-                          <div key={i} className="y-axis-label">
-                            {formatCost(val)}
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* Chart body */}
-                      <div className="chart-main">
-                        {/* Grid lines */}
-                        <div className="chart-grid">
-                          {[0, 1, 2, 3, 4].map(i => (
-                            <div key={i} className="chart-grid-line" style={{ bottom: `${i * 25}%` }} />
-                          ))}
-                        </div>
-
-                        {/* Bar chart scroll area */}
-                        <div className="chart-scroll-view">
-                          <div className="chart-bars">
-                            {filteredDailyUsage.map((day) => {
-                              const height = maxCost > 0 ? (day.cost / maxCost) * 100 : 0;
-                              return (
-                                <div key={day.date} className="chart-bar-wrapper">
-                                  <div className="chart-bar-container">
-                                    <div
-                                      className="chart-bar"
-                                      style={{ height: `${height}%` }}
-                                      onMouseEnter={(e) => {
-                                        const rect = e.currentTarget.getBoundingClientRect();
-                                        setTooltip({
-                                          visible: true,
-                                          x: rect.left + rect.width / 2,
-                                          y: rect.top,
-                                          content: { date: day.date, cost: day.cost, sessions: day.sessions }
-                                        });
-                                      }}
-                                      onMouseLeave={() => setTooltip(prev => ({ ...prev, visible: false }))}
-                                    />
-                                  </div>
-                                  <div className="chart-label">{formatChineseDate(day.date)}</div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()
-              ) : (
-                <div className="empty-timeline">
-                  <span className="codicon codicon-info" />
-                  <p>{t('usage.noDataInRange')}</p>
-                </div>
-              )}
-            </div>
-          </div>
+          <UsageTimelineTab
+            filteredDailyUsage={filteredDailyUsage}
+            tooltip={tooltip}
+            setTooltip={setTooltip}
+            formatCost={formatCost}
+            formatChineseDate={formatChineseDate}
+          />
         )}
       </div>
-
-      {/* Custom Tooltip */}
-      {tooltip.visible && (
-        <div
-          className="chart-tooltip"
-          style={{ left: tooltip.x, top: tooltip.y }}
-        >
-          <div className="tooltip-date">{formatChineseDate(tooltip.content.date)}</div>
-          <div className="tooltip-cost">{formatCost(tooltip.content.cost)}</div>
-          <div className="tooltip-sessions">{tooltip.content.sessions} {t('usage.sessionsCount')}</div>
-        </div>
-      )}
 
       {/* Last updated time */}
       {statistics.lastUpdated && (

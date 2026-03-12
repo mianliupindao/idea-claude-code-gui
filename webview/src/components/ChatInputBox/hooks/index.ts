@@ -9,15 +9,22 @@ export { useIMEComposition } from './useIMEComposition.js';
 export { usePasteAndDrop } from './usePasteAndDrop.js';
 export { usePromptEnhancer } from './usePromptEnhancer.js';
 export { useGlobalCallbacks } from './useGlobalCallbacks.js';
+export { useInputHistory } from './useInputHistory.js';
 export {
-  useInputHistory,
-  loadHistory,
-  loadCounts,
-  isHistoryCompletionEnabled,
   HISTORY_STORAGE_KEY,
   HISTORY_COUNTS_KEY,
   HISTORY_ENABLED_KEY,
-} from './useInputHistory.js';
+  loadHistory,
+  loadCounts,
+  isHistoryCompletionEnabled,
+  loadHistoryWithImportance,
+  deleteHistoryItem,
+  clearAllHistory,
+  addHistoryItem,
+  updateHistoryItem,
+  clearLowImportanceHistory,
+  type HistoryItem,
+} from './inputHistoryStorage.js';
 export { useSubmitHandler } from './useSubmitHandler.js';
 export { useKeyboardHandler } from './useKeyboardHandler.js';
 export { useNativeEventCapture } from './useNativeEventCapture.js';
